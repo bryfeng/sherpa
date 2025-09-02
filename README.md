@@ -78,11 +78,12 @@ python main.py
 
 ## 🎭 AI Persona System
 
-The system includes 4 distinct AI personalities you can switch between:
+The system includes 4 distinct AI personalities that you can switch between, and **all personas are fully customizable** through user-friendly YAML configuration files:
 
 ### 🤗 **Friendly Crypto Guide** (Default)
 - **Style**: Casual, conversational, encouraging
 - **Best For**: Beginners, general portfolio questions
+- **Switch**: Automatic default or `/persona friendly`
 - **Example**: *"Hey there! 👋 I'd love to help you understand your crypto portfolio! Think of it like a digital wallet..."*
 
 ### 🔬 **Technical DeFi Analyst**  
@@ -102,6 +103,100 @@ The system includes 4 distinct AI personalities you can switch between:
 - **Best For**: Understanding concepts, crypto education
 - **Switch**: `/persona educational`
 - **Example**: *"Let me explain what each token in your portfolio does, starting with the basics..."*
+
+### 🎨 **Dynamic Response Styles**
+Combine personas with response styles for ultimate customization:
+- **`/style casual`** - Relaxed, friendly communication
+- **`/style technical`** - Precise, data-focused responses  
+- **`/style brief`** - Concise, to-the-point answers
+- **`/style educational`** - Detailed explanations with examples
+
+**Example**: `/persona technical` + `/style brief` = *"Portfolio TVL: $1.2M. ETH dominance: 65%. DeFi exposure: 12% via UNI/AAVE. Risk score: Medium."*
+
+## 🎨 Persona Customization
+
+**🔥 New Feature**: All personas are now **100% customizable** through user-friendly YAML files! No coding required.
+
+### Quick Persona Customization
+```bash
+# 1. Navigate to personas directory
+cd personas/
+
+# 2. Edit any persona (they're just text files!)
+# Examples:
+nano friendly.yaml      # Make the friendly guide more enthusiastic
+nano technical.yaml     # Add new technical keywords
+nano professional.yaml  # Adjust formality level
+nano educational.yaml   # Modify teaching style
+
+# 3. Changes take effect immediately - no restart needed!
+```
+
+### YAML Configuration Structure
+Each persona is defined in a simple, commented YAML file:
+```yaml
+# personas/friendly.yaml
+name: friendly
+display_name: "Friendly Crypto Guide"
+description: "Approachable and encouraging crypto assistant"
+
+# Communication Style
+tone: "warm and conversational"
+formality: "casual"
+technical_depth: "medium - explains concepts clearly"
+use_emojis: true
+response_length: "medium"
+
+# Areas of Expertise
+specializations:
+  - portfolio_analysis
+  - crypto_education
+  - user_encouragement
+
+# System Prompt - The AI's core behavior instructions
+system_prompt: |
+  You are a friendly and knowledgeable crypto portfolio assistant.
+  Your personality is warm, approachable, and encouraging...
+  [Full customizable prompt]
+
+# Auto-detection keywords (when to use this persona automatically)
+auto_detection_keywords:
+  - friendly
+  - help
+  - explain
+  - new to crypto
+  - beginner
+```
+
+### Customization Examples
+
+**Make a persona more enthusiastic:**
+```yaml
+# Edit personas/friendly.yaml
+tone: "extremely enthusiastic and upbeat"
+formality: "very casual and energetic"
+```
+
+**Add technical expertise:**
+```yaml
+# Edit personas/technical.yaml
+auto_detection_keywords:
+  - yield farming
+  - liquidity pools
+  - smart contracts  # New keywords
+  - defi protocols
+```
+
+**Create conservative financial advice:**
+```yaml
+# Edit personas/professional.yaml
+system_prompt: |
+  Always emphasize risks before opportunities.
+  Suggest diversification and conservative strategies.
+  Warn about market volatility frequently.
+```
+
+📖 **Full Customization Guide**: See `docs/persona_customization.md` for complete documentation with examples, best practices, and troubleshooting.
 
 ## 💬 Example Conversations
 
@@ -167,9 +262,17 @@ The system uses a sophisticated multi-layer architecture:
 
 #### 🤖 **Agent System** (`app/core/agent/`)
 - **`base.py`**: Core Agent orchestrator managing the entire conversation flow
-- **`personas.py`**: 4 AI personality definitions with distinct prompts and styles
+- **`personas.py`**: AI personality manager that loads from external YAML files
+- **`styles.py`**: Dynamic response style system for customizing communication format
 - **`context.py`**: Conversation memory, history management, and context compression
 - **Smart tool integration**: Seamlessly incorporates portfolio data into LLM context
+
+#### 🎭 **Persona Configuration** (`personas/`)
+- **`friendly.yaml`**: Friendly Crypto Guide configuration
+- **`technical.yaml`**: Technical DeFi Analyst configuration
+- **`professional.yaml`**: Professional Portfolio Advisor configuration
+- **`educational.yaml`**: Educational Crypto Teacher configuration
+- **User-editable**: All personas can be customized without coding
 
 #### 🔌 **LLM Provider Layer** (`app/providers/llm/`)  
 - **`base.py`**: Abstract provider interface for multi-LLM support
@@ -229,6 +332,9 @@ curl -X POST http://localhost:8000/chat \
 ```bash
 # Test AI agent system
 python test_agent_system.py
+
+# Test response style system
+python test_style_system.py
 
 # Test API integration  
 python -m pytest tests/test_api.py -v
@@ -300,9 +406,15 @@ Try these addresses to see the AI system in action:
 
 ## 🚧 What's Next
 
-### Planned Enhancements (Phase D)
-- **Advanced Response Styles**: `/style casual`, `/style technical`, `/style brief`
+### Recently Completed ✅
+- **✅ Dynamic Response Styles**: `/style casual`, `/style technical`, `/style brief`, `/style educational` - **IMPLEMENTED!**
+- **✅ YAML Persona Customization**: Complete external persona configuration system - **IMPLEMENTED!**
+- **✅ Enhanced Token Metadata**: Improved token symbol resolution with fallbacks - **IMPLEMENTED!**
+
+### Planned Enhancements (Phase D - In Progress)
 - **Cross-session Memory**: Remember user preferences between conversations
+- **Advanced Crypto Knowledge Integration**: Enhanced crypto protocol understanding
+- **Conversation Learning**: Adaptive responses based on user interaction patterns
 - **DeFi Protocol Integration**: Deep Uniswap, Aave, Compound analysis
 - **Market Sentiment Analysis**: Real-time market insights and news integration
 
