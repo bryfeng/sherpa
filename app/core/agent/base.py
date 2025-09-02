@@ -15,6 +15,7 @@ from ...providers.llm.base import LLMProvider, LLMMessage, LLMResponse
 from ...types.requests import ChatRequest, ChatMessage
 from ...types.responses import ChatResponse
 from ...tools.portfolio import get_portfolio
+from .styles import StyleManager, ResponseStyle
 
 
 class AgentResponse(BaseModel):
@@ -51,15 +52,19 @@ class Agent:
         llm_provider: LLMProvider,
         persona_manager: Optional['PersonaManager'] = None,
         context_manager: Optional['ContextManager'] = None,
+        style_manager: Optional['StyleManager'] = None,
         logger: Optional[logging.Logger] = None
     ):
         self.llm_provider = llm_provider
         self.persona_manager = persona_manager
         self.context_manager = context_manager
+        self.style_manager = style_manager or StyleManager()
         self.logger = logger or logging.getLogger(__name__)
         
         # Agent state
         self._active_conversations: Dict[str, Dict] = {}
+        # Style state per conversation
+        self._conversation_styles: Dict[str, ResponseStyle] = {}
         
     async def process_message(
         self,
@@ -82,28 +87,39 @@ class Agent:
             conversation_id = str(uuid.uuid4())
             
         try:
-            # Step 1: Determine persona
+            # Step 1: Handle style commands and detection
+            style_response = await self._handle_style_processing(
+                request.messages, 
+                conversation_id
+            )
+            
+            # If style command was processed, return style help response
+            if style_response:
+                return style_response
+            
+            # Step 2: Determine persona
             current_persona = await self._determine_persona(
                 request.messages, 
                 conversation_id, 
                 persona_name
             )
             
-            # Step 2: Prepare context
+            # Step 3: Prepare context (now includes style modifiers)
             context_messages = await self._prepare_context(
                 request, 
                 conversation_id, 
                 current_persona
             )
             
-            # Step 3: Execute tools if needed
+            # Step 4: Execute tools if needed
             tool_data = await self._execute_tools(request)
             
-            # Step 4: Generate LLM response
+            # Step 5: Generate LLM response
             llm_response = await self._generate_llm_response(
                 context_messages,
                 tool_data,
-                current_persona
+                current_persona,
+                conversation_id
             )
             
             # Step 5: Format final response
@@ -239,9 +255,20 @@ class Agent:
         self,
         messages: List[LLMMessage],
         tool_data: Dict[str, Any],
-        persona_name: str
+        persona_name: str,
+        conversation_id: str
     ) -> LLMResponse:
-        """Generate response from LLM with tool data context"""
+        """Generate response from LLM with tool data context and style modifiers"""
+        
+        # Add style modifier to system context
+        current_style = self._conversation_styles.get(conversation_id, self.style_manager.get_current_style())
+        style_modifier = self.style_manager.get_style_modifier_prompt(current_style)
+        
+        if style_modifier:
+            messages.append(LLMMessage(
+                role="system",
+                content=f"Response style guidance: {style_modifier}"
+            ))
         
         # Add tool data to context if available
         if tool_data:
@@ -416,6 +443,65 @@ class Agent:
         
         When portfolio data is available, focus on providing meaningful insights about the holdings, their values, and portfolio composition."""
 
+    async def _handle_style_processing(
+        self,
+        messages: List[ChatMessage],
+        conversation_id: str
+    ) -> Optional[AgentResponse]:
+        """
+        Handle style commands and automatic style detection.
+        Returns AgentResponse if a style command was processed, None otherwise.
+        """
+        if not messages:
+            return None
+            
+        latest_message = messages[-1].content
+        
+        # Check for explicit style commands first
+        style_command = self.style_manager.parse_style_command(latest_message)
+        if style_command:
+            # Update conversation style
+            self._conversation_styles[conversation_id] = style_command
+            self.style_manager.set_style(style_command)
+            
+            # Return confirmation response
+            style_info = self.style_manager.get_style_info(style_command)
+            return AgentResponse(
+                reply=f"✨ Style switched to **{style_info.get('name', style_command.value.title())}**!\n\n"
+                      f"{style_info.get('description', 'Style updated successfully.')}\n\n"
+                      f"All my responses will now use this style. You can switch styles anytime with `/style [name]` "
+                      f"or type `/style help` to see all available options.",
+                panels={},
+                sources=[],
+                agent_metadata={'style_switched': style_command.value},
+                conversation_id=conversation_id,
+                processing_time_ms=0.0
+            )
+        
+        # Check for style help command
+        if latest_message.lower().strip() in ['/style help', '/style', '/styles']:
+            help_text = self.style_manager.format_style_help()
+            return AgentResponse(
+                reply=help_text,
+                panels={},
+                sources=[],
+                agent_metadata={'style_help': True},
+                conversation_id=conversation_id,
+                processing_time_ms=0.0
+            )
+        
+        # Automatic style detection (only if no conversation style set yet)
+        if conversation_id not in self._conversation_styles:
+            detected_style = self.style_manager.detect_style_from_message(latest_message)
+            if detected_style:
+                self._conversation_styles[conversation_id] = detected_style
+                self.style_manager.set_style(detected_style)
+                
+                # Log the automatic detection
+                self.logger.info(f"Auto-detected style '{detected_style.value}' for conversation {conversation_id}")
+        
+        return None
+    
     def to_chat_response(self, agent_response: AgentResponse) -> ChatResponse:
         """Convert AgentResponse to ChatResponse for API compatibility"""
         

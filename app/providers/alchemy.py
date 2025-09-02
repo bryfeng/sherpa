@@ -2,6 +2,7 @@ import httpx
 from typing import Any, Dict, List
 from ..config import settings
 from .base import IndexerProvider
+from .token_list import get_fallback_token_metadata, is_likely_spam_token
 
 
 class AlchemyProvider(IndexerProvider):
@@ -104,36 +105,84 @@ class AlchemyProvider(IndexerProvider):
     
     async def get_token_metadata(self, token_addresses: List[str]) -> Dict[str, Any]:
         """Get metadata for multiple tokens"""
-        payload = {
-            "jsonrpc": "2.0",
-            "method": "alchemy_getTokenMetadata",
-            "params": [{"contractAddress": addr} for addr in token_addresses],
-            "id": 1
-        }
+        metadata = {}
         
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                self.base_url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=self.timeout_s
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            if "error" in data:
-                raise Exception(f"Alchemy error: {data['error']}")
-            
-            metadata = {}
-            if isinstance(data.get("result"), list):
-                for i, addr in enumerate(token_addresses):
-                    if i < len(data["result"]):
-                        token_info = data["result"][i]
-                        metadata[addr] = {
-                            "symbol": token_info.get("symbol", "UNKNOWN"),
-                            "name": token_info.get("name", "Unknown Token"),
-                            "decimals": token_info.get("decimals", 18),
-                            "_source": {"name": "alchemy", "url": "https://alchemy.com"}
-                        }
-            
-            return metadata
+        # Call metadata for each token individually
+        for addr in token_addresses:
+            try:
+                payload = {
+                    "jsonrpc": "2.0",
+                    "method": "alchemy_getTokenMetadata",
+                    "params": [addr],
+                    "id": 1
+                }
+                
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        self.base_url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                        timeout=self.timeout_s
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    if "error" in data:
+                        print(f"Alchemy metadata error for {addr}: {data['error']}")
+                        # Try fallback token metadata
+                        fallback_metadata = get_fallback_token_metadata(addr)
+                        metadata[addr] = fallback_metadata
+                        continue
+                    
+                    token_info = data.get("result", {})
+                    
+                    # Validate token info and set defaults
+                    symbol_raw = token_info.get("symbol")
+                    name_raw = token_info.get("name")
+                    
+                    symbol = (symbol_raw or "").strip() if symbol_raw else "UNKNOWN"
+                    name = (name_raw or "").strip() if name_raw else "Unknown Token"
+                    
+                    if not symbol:
+                        symbol = "UNKNOWN"
+                    if not name:
+                        name = "Unknown Token"
+                    decimals = token_info.get("decimals")
+                    
+                    # Handle decimals validation
+                    if decimals is None:
+                        decimals = 18
+                    elif isinstance(decimals, str):
+                        try:
+                            decimals = int(decimals)
+                        except ValueError:
+                            decimals = 18
+                    
+                    # If Alchemy returns UNKNOWN, try fallback
+                    if symbol == "UNKNOWN" or name == "Unknown Token":
+                        fallback_metadata = get_fallback_token_metadata(addr)
+                        if fallback_metadata["symbol"] != "UNKNOWN":
+                            # Use fallback data if it's better than what Alchemy returned
+                            symbol = fallback_metadata["symbol"]
+                            name = fallback_metadata["name"]
+                            decimals = fallback_metadata["decimals"]
+                    
+                    # Check for spam tokens and mark them
+                    if is_likely_spam_token(symbol, name, addr):
+                        symbol = f"[SPAM] {symbol}"
+                        name = f"[SPAM] {name}"
+                    
+                    metadata[addr] = {
+                        "symbol": symbol,
+                        "name": name,
+                        "decimals": decimals,
+                        "_source": {"name": "alchemy", "url": "https://alchemy.com"}
+                    }
+                    
+            except Exception as e:
+                print(f"Failed to get metadata for {addr}: {str(e)}")
+                # Try fallback token metadata for failed requests
+                fallback_metadata = get_fallback_token_metadata(addr)
+                metadata[addr] = fallback_metadata
+        
+        return metadata

@@ -146,20 +146,20 @@ The system uses a sophisticated multi-layer architecture:
 
 ```
 ┌─────────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
-│   FastAPI Layer    │    │    Agent System      │    │   LLM Providers     │
+│   FastAPI Layer     │    │    Agent System      │    │   LLM Providers     │
 │                     │    │                      │    │                     │
-│  • /chat           │────│  • Agent Core        │────│  • Anthropic Claude │
-│  • /tools/portfolio│    │  • 4 AI Personas     │    │  • OpenAI (ready)   │
-│  • /healthz        │    │  • Context Manager   │    │  • Grok (ready)     │
+│  • /chat            │────│  • Agent Core        │────│  • Anthropic Claude │
+│  • /tools/portfolio │    │  • 4 AI Personas     │    │  • OpenAI (ready)   │
+│  • /healthz         │    │  • Context Manager   │    │  • Grok (ready)     │
 │                     │    │  • Tool Integration  │    │  • Local (ready)    │
 └─────────────────────┘    └──────────────────────┘    └─────────────────────┘
            │                           │                           │
 ┌─────────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
-│   Data Providers   │    │  Response Builder    │    │   Configuration     │
+│   Data Providers    │    │  Response Builder    │    │   Configuration     │
 │                     │    │                      │    │                     │
-│  • Alchemy API     │────│  • Structure Format  │    │  • API Keys         │
-│  • CoinGecko API   │    │  • Panel Generation  │    │  • Model Settings   │
-│  • Portfolio Tools │    │  • Source Attribution│    │  • Persona Configs  │
+│  • Alchemy API      │────│  • Structure Format  │    │  • API Keys         │
+│  • CoinGecko API    │    │  • Panel Generation  │    │  • Model Settings   │
+│  • Portfolio Tools  │    │  • Source Attribution│    │  • Persona Configs  │
 └─────────────────────┘    └──────────────────────┘    └─────────────────────┘
 ```
 
