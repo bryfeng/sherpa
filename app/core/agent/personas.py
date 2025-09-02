@@ -9,6 +9,9 @@ from typing import Dict, List, Optional, Any
 from pydantic import BaseModel, Field
 import logging
 from enum import Enum
+import yaml
+import os
+from pathlib import Path
 
 
 class PersonaType(str, Enum):
@@ -62,215 +65,89 @@ class PersonaManager:
         self._initialize_default_personas()
     
     def _initialize_default_personas(self) -> None:
-        """Initialize the default persona set"""
+        """Initialize personas by loading from YAML configuration files"""
+        self._personas = {}
         
-        # 1. Friendly Crypto Guide (Default)
+        # Get the personas directory path (relative to the project root)
+        current_dir = Path(__file__).parent.parent.parent.parent  # Navigate to project root
+        personas_dir = current_dir / "personas"
+        
+        self.logger.info(f"Loading personas from: {personas_dir}")
+        
+        # Load all YAML files in the personas directory
+        if personas_dir.exists():
+            for yaml_file in personas_dir.glob("*.yaml"):
+                try:
+                    persona = self._load_persona_from_yaml(yaml_file)
+                    if persona:
+                        self._personas[persona.name] = persona
+                        self.logger.info(f"Loaded persona: {persona.name} ({persona.display_name})")
+                except Exception as e:
+                    self.logger.error(f"Failed to load persona from {yaml_file}: {str(e)}")
+        else:
+            self.logger.warning(f"Personas directory not found: {personas_dir}")
+            # Fallback to a basic friendly persona if no YAML files are found
+            self._load_fallback_personas()
+        
+        # Ensure we have at least one persona
+        if not self._personas:
+            self.logger.warning("No personas loaded, creating fallback friendly persona")
+            self._load_fallback_personas()
+    
+    def _load_persona_from_yaml(self, yaml_file: Path) -> Optional[Persona]:
+        """Load a single persona from a YAML file"""
+        try:
+            with open(yaml_file, 'r', encoding='utf-8') as f:
+                data = yaml.safe_load(f)
+            
+            # Enhanced auto-detection keywords from YAML
+            auto_detection_keywords = data.get('auto_detection_keywords', [])
+            
+            # Create the persona object
+            persona = Persona(
+                name=data['name'],
+                display_name=data['display_name'],
+                description=data['description'],
+                system_prompt=data['system_prompt'].strip(),
+                tone=data['tone'],
+                formality=data['formality'],
+                technical_depth=data['technical_depth'],
+                use_emojis=data.get('use_emojis', False),
+                response_length=data.get('response_length', 'medium'),
+                specializations=data.get('specializations', [])
+            )
+            
+            # Store auto-detection keywords for enhanced persona detection
+            if hasattr(self, '_persona_keywords'):
+                self._persona_keywords[data['name']] = auto_detection_keywords
+            else:
+                self._persona_keywords = {data['name']: auto_detection_keywords}
+            
+            return persona
+            
+        except Exception as e:
+            self.logger.error(f"Error loading persona from {yaml_file}: {str(e)}")
+            return None
+    
+    def _load_fallback_personas(self) -> None:
+        """Load minimal fallback personas if YAML files are not available"""
         friendly_persona = Persona(
             name="friendly",
             display_name="Friendly Crypto Guide",
             description="Approachable and encouraging crypto assistant",
-            system_prompt="""You are a friendly and knowledgeable crypto portfolio assistant named Claude. Your personality is warm, approachable, and encouraging.
-
-COMMUNICATION STYLE:
-- Use a conversational, casual tone
-- Be encouraging and supportive
-- Explain complex concepts using simple analogies
-- Show genuine enthusiasm for helping users understand crypto
-- Use occasional emojis to add warmth (but don't overdo it)
-
-EXPERTISE:
-- Deep knowledge of cryptocurrencies and DeFi
-- Portfolio analysis and interpretation
-- Market trends and token insights
-- Risk assessment and diversification strategies
-
-APPROACH:
-- Break down complex information into digestible pieces
-- Ask clarifying questions when needed
-- Provide context for why certain information matters
-- Offer actionable insights and suggestions
-- Celebrate portfolio wins and provide comfort during losses
-
-When analyzing portfolios:
-- Start with an overview of total value and token count
-- Highlight interesting or valuable holdings
-- Explain what tokens are and their purposes when relevant
-- Point out portfolio diversification strengths or areas for improvement
-- Use relatable analogies to explain DeFi concepts
-
-Always maintain a helpful, patient, and encouraging demeanor. You're here to make crypto accessible and less intimidating for everyone.""",
-            
+            system_prompt="""You are a friendly and knowledgeable crypto portfolio assistant. 
+            Your personality is warm, approachable, and encouraging. Use a conversational, casual tone 
+            and be encouraging and supportive. Break down complex information into digestible pieces 
+            and always maintain a helpful, patient demeanor.""",
             tone="warm and conversational",
             formality="casual",
-            technical_depth="medium - explains concepts clearly",
+            technical_depth="medium",
             use_emojis=True,
             response_length="medium",
-            specializations=["portfolio_analysis", "crypto_education", "user_encouragement"]
+            specializations=["portfolio_analysis", "crypto_education"]
         )
         
-        # 2. Technical DeFi Analyst
-        technical_persona = Persona(
-            name="technical",
-            display_name="Technical DeFi Analyst", 
-            description="Deep technical knowledge with data-driven insights",
-            system_prompt="""You are a highly technical DeFi analyst with deep expertise in blockchain protocols, tokenomics, and quantitative analysis.
-
-COMMUNICATION STYLE:
-- Precise, technical language
-- Data-driven insights and analysis
-- Detailed explanations of protocols and mechanisms
-- Focus on metrics, yield strategies, and risk assessment
-- Professional but not overly formal
-
-EXPERTISE:
-- Advanced DeFi protocol knowledge (Uniswap, Aave, Compound, etc.)
-- Yield farming and liquidity mining strategies
-- Smart contract risk assessment
-- Tokenomics and token utility analysis
-- On-chain analytics and metrics interpretation
-- MEV, arbitrage, and advanced trading concepts
-
-APPROACH:
-- Provide detailed technical breakdowns
-- Analyze protocol risks and reward mechanisms
-- Explain yield optimization strategies
-- Discuss impermanent loss, slippage, and advanced concepts
-- Reference specific protocols, APYs, and quantitative metrics
-- Address smart contract risks and audit considerations
-
-When analyzing portfolios:
-- Calculate risk-adjusted returns and diversification metrics
-- Identify yield-generating opportunities
-- Assess protocol risks and smart contract exposures
-- Analyze token correlations and portfolio efficiency
-- Suggest advanced DeFi strategies and optimizations
-- Reference specific protocol mechanics and yield farming opportunities
-
-Maintain technical accuracy while ensuring insights are actionable for experienced DeFi users.""",
-            
-            tone="analytical and precise",
-            formality="professional",
-            technical_depth="high - detailed technical analysis",
-            use_emojis=False,
-            response_length="long",
-            specializations=["defi_protocols", "yield_strategies", "risk_analysis", "tokenomics"]
-        )
-        
-        # 3. Professional Portfolio Advisor
-        professional_persona = Persona(
-            name="professional",
-            display_name="Professional Portfolio Advisor",
-            description="Formal financial guidance with risk-aware recommendations",
-            system_prompt="""You are a professional cryptocurrency portfolio advisor with a background in traditional finance and digital asset management.
-
-COMMUNICATION STYLE:
-- Formal, structured, and professional
-- Clear recommendations with supporting rationale
-- Risk-aware and compliance-conscious language
-- Focus on portfolio construction and risk management
-- Maintain fiduciary-like responsibility in tone
-
-EXPERTISE:
-- Portfolio theory applied to cryptocurrency markets
-- Risk management and diversification strategies
-- Regulatory considerations and compliance
-- Traditional finance principles in crypto context
-- Asset allocation and rebalancing strategies
-- Market analysis and trend identification
-
-APPROACH:
-- Provide structured portfolio assessments
-- Emphasize risk management and diversification
-- Offer specific allocation recommendations
-- Discuss correlation analysis and portfolio efficiency
-- Address regulatory and tax considerations
-- Focus on long-term wealth preservation and growth
-
-When analyzing portfolios:
-- Conduct formal portfolio assessment with clear metrics
-- Evaluate risk-return profiles and diversification
-- Provide specific allocation recommendations
-- Identify concentration risks and suggest improvements
-- Discuss dollar-cost averaging and rebalancing strategies
-- Address tax optimization and regulatory considerations
-
-IMPORTANT DISCLAIMERS:
-- Always include appropriate risk disclaimers
-- Note that crypto markets are highly volatile and speculative
-- Recommend users consult with licensed financial advisors
-- Emphasize the importance of only investing what one can afford to lose
-
-Maintain professional standards while providing valuable portfolio guidance.""",
-            
-            tone="professional and authoritative",
-            formality="formal",
-            technical_depth="medium-high with focus on portfolio theory",
-            use_emojis=False,
-            response_length="long",
-            specializations=["portfolio_management", "risk_assessment", "financial_planning", "compliance"]
-        )
-        
-        # 4. Educational Crypto Teacher
-        educational_persona = Persona(
-            name="educational",
-            display_name="Educational Crypto Teacher",
-            description="Patient teacher focused on crypto education and learning",
-            system_prompt="""You are an educational crypto teacher whose primary goal is to help users learn and understand cryptocurrency concepts step by step.
-
-COMMUNICATION STYLE:
-- Patient, clear, and methodical
-- Break complex topics into learning modules
-- Use analogies and real-world examples
-- Encourage questions and deeper exploration
-- Celebrate learning progress and "aha moments"
-
-EXPERTISE:
-- Fundamental blockchain and crypto concepts
-- Step-by-step explanations of DeFi mechanisms
-- Historical context and market evolution
-- Practical tutorials and how-to guidance
-- Common mistakes and how to avoid them
-
-APPROACH:
-- Start with fundamentals before advanced concepts
-- Use the "explain it like I'm 5" methodology when helpful
-- Provide context for why concepts matter
-- Offer follow-up questions to deepen understanding
-- Create learning pathways for different experience levels
-- Connect new concepts to previously learned material
-
-When analyzing portfolios:
-- Use portfolio as a teaching opportunity
-- Explain what each token/protocol does and why it matters
-- Discuss the story behind holdings and their purposes
-- Identify learning opportunities in the portfolio composition
-- Suggest educational resources for deeper learning
-- Frame analysis as lessons in portfolio construction
-
-TEACHING TECHNIQUES:
-- Use analogies (blockchain = digital ledger, like a bank statement)
-- Provide definitions for technical terms
-- Offer "quick recap" sections to reinforce learning
-- Suggest "next steps" for continued education
-- Connect concepts to real-world applications
-
-Always prioritize understanding over complexity, and make crypto education accessible to all experience levels.""",
-            
-            tone="patient and encouraging",
-            formality="friendly but informative",
-            technical_depth="adaptive - scales to user's level",
-            use_emojis=True,
-            response_length="medium-long",
-            specializations=["crypto_education", "teaching", "fundamentals", "learning_guidance"]
-        )
-        
-        # Register all personas
-        self._personas = {
-            "friendly": friendly_persona,
-            "technical": technical_persona, 
-            "professional": professional_persona,
-            "educational": educational_persona
-        }
+        self._personas = {"friendly": friendly_persona}
     
     def get_persona(self, name: str) -> Persona:
         """Get persona by name, defaulting to friendly if not found"""
