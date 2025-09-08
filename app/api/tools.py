@@ -2,6 +2,8 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import Optional
 from ..types import PortfolioResponse
 from ..tools.portfolio import get_portfolio
+from ..tools.defillama import get_tvl_series, get_tvl_current
+from ..tools.polymarket import fetch_markets
 
 router = APIRouter(prefix="/tools")
 
@@ -35,3 +37,38 @@ async def get_portfolio_endpoint(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch portfolio: {str(e)}")
+
+
+@router.get("/defillama/tvl")
+async def get_defillama_tvl(
+    protocol: str = Query("uniswap", description="Protocol name on DefiLlama"),
+    range: str = Query("7d", description="Window range: 7d or 30d"),
+):
+    try:
+        ts, tvl = await get_tvl_series(protocol=protocol, window=range)
+        return {"timestamps": ts, "tvl": tvl, "source": "defillama"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch DefiLlama TVL: {str(e)}")
+
+
+@router.get("/defillama/current")
+async def get_defillama_current(
+    protocol: str = Query("uniswap", description="Protocol name on DefiLlama"),
+):
+    try:
+        ts, tvl = await get_tvl_current(protocol=protocol)
+        return {"timestamp": ts, "tvl": tvl, "source": "defillama"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch DefiLlama current TVL: {str(e)}")
+
+
+@router.get("/polymarket/markets")
+async def get_polymarket_markets(
+    query: str = Query("", description="Search query"),
+    limit: int = Query(5, ge=1, le=20),
+):
+    try:
+        markets = await fetch_markets(query=query, limit=limit)
+        return {"markets": markets}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch Polymarket markets: {str(e)}")

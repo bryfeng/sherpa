@@ -10,11 +10,13 @@ from pydantic import BaseModel, Field
 import logging
 from datetime import datetime
 import uuid
+from statistics import mean, pstdev
 
 from ...providers.llm.base import LLMProvider, LLMMessage, LLMResponse
 from ...types.requests import ChatRequest, ChatMessage
 from ...types.responses import ChatResponse
 from ...tools.portfolio import get_portfolio
+from ...tools.defillama import get_tvl_series
 from .styles import StyleManager, ResponseStyle
 
 
@@ -113,6 +115,38 @@ class Agent:
             
             # Step 4: Execute tools if needed
             tool_data = await self._execute_tools(request)
+            # Add TVL data if applicable
+            try:
+                if self._needs_tvl_data(request):
+                    params = self._extract_tvl_params(request)
+                    ts, tvl = await get_tvl_series(protocol=params['protocol'], window=params['window'])
+                    stats = self._compute_tvl_stats(ts, tvl)
+                    tool_data['defillama_tvl'] = {
+                        'protocol': params['protocol'],
+                        'window': params['window'],
+                        'timestamps': ts,
+                        'tvl': tvl,
+                        'stats': stats,
+                    }
+                    # Update episodic focus in conversation memory
+                    if self.context_manager:
+                        try:
+                            await self.context_manager.set_active_focus(
+                                conversation_id,
+                                {
+                                    'entity': params['protocol'],
+                                    'protocol': params['protocol'],
+                                    'metric': 'tvl',
+                                    'window': params['window'],
+                                    'chain': request.chain,
+                                    'stats': stats,
+                                    'source': 'defillama',
+                                },
+                            )
+                        except Exception as e:
+                            self.logger.warning(f"Failed setting episodic focus: {str(e)}")
+            except Exception as e:
+                self.logger.error(f"DefiLlama TVL fetch error: {str(e)}")
             
             # Step 5: Generate LLM response
             llm_response = await self._generate_llm_response(
@@ -251,6 +285,28 @@ class Agent:
                 
         return tool_data
 
+    def _needs_tvl_data(self, request: ChatRequest) -> bool:
+        """Determine if the request is asking for TVL/chart data (e.g., Uniswap TVL)."""
+        if not request.messages:
+            return False
+        msg = request.messages[-1].content.lower()
+        # Basic heuristic: user mentions TVL and Uniswap
+        return ('tvl' in msg or 'total value locked' in msg) and ('uniswap' in msg)
+
+    def _extract_tvl_params(self, request: ChatRequest) -> Dict[str, str]:
+        """Extract protocol and range from the message; defaults to uniswap + 7d."""
+        protocol = 'uniswap'
+        window = '7d'
+        msg = request.messages[-1].content.lower() if request.messages else ''
+        if '30d' in msg or '30 d' in msg or 'month' in msg or '30 days' in msg:
+            window = '30d'
+        elif '7d' in msg or '7 d' in msg or 'week' in msg or '7 days' in msg:
+            window = '7d'
+        # Simple protocol extraction (extend later if needed)
+        if 'uniswap' in msg:
+            protocol = 'uniswap'
+        return {'protocol': protocol, 'window': window}
+
     async def _generate_llm_response(
         self,
         messages: List[LLMMessage],
@@ -277,6 +333,15 @@ class Agent:
                 role="system",
                 content=f"Available data: {tool_context}"
             ))
+            if 'defillama_tvl' in tool_data:
+                messages.append(LLMMessage(
+                    role="system",
+                    content=(
+                        "With the provided TVL time series, write a concise 7-day analysis with 2–4 bullets: "
+                        "start vs end, absolute and percent change, min/max with dates, and overall trend. "
+                        "Avoid disclaimers about missing charts; assume the user sees the chart panel."
+                    )
+                ))
             
         # Generate response from LLM
         response = await self.llm_provider.generate_response(
@@ -302,14 +367,44 @@ class Agent:
         # Extract panels and sources from tool data
         panels = {}
         sources = []
+        reply_text = llm_response.content
         
         if 'portfolio' in tool_data:
             portfolio_info = tool_data['portfolio']
             panels['portfolio'] = portfolio_info['data']
             sources.extend(portfolio_info['sources'])
+
+        # Add DefiLlama TVL panel if available
+        if 'defillama_tvl' in tool_data:
+            tvl_info = tool_data['defillama_tvl']
+            ts = tvl_info.get('timestamps', [])
+            tvl = tvl_info.get('tvl', [])
+            protocol = tvl_info.get('protocol', 'uniswap')
+            window = tvl_info.get('window', '7d')
+            # Panel with normalized shape for frontend transformer
+            panels['uniswap_tvl_chart'] = {
+                'kind': 'chart',
+                'title': f'{protocol.title()} TVL ({window})',
+                'payload': {
+                    'timestamps': ts,
+                    'tvl': tvl,
+                    'unit': 'USD',
+                    'source': {
+                        'name': 'DefiLlama',
+                        'url': f'https://defillama.com/protocol/{protocol}'
+                    },
+                },
+            }
+            # Attribution
+            sources.append({'name': 'DefiLlama', 'url': 'https://defillama.com'})
+            # Deterministic short analysis to avoid LLM disclaimers
+            stats = tvl_info.get('stats') or {}
+            summary = self._compose_tvl_reply(protocol, window, stats)
+            if summary:
+                reply_text = summary
             
         return AgentResponse(
-            reply=llm_response.content,
+            reply=reply_text,
             panels=panels,
             sources=sources,
             agent_metadata={
@@ -425,8 +520,110 @@ class Agent:
         if 'portfolio_error' in tool_data:
             error_info = tool_data['portfolio_error']
             formatted_parts.append(f"Portfolio data unavailable: {error_info['error']}")
-            
+        
+        if 'defillama_tvl' in tool_data:
+            tvl_obj = tool_data['defillama_tvl']
+            protocol = tvl_obj.get('protocol', 'uniswap')
+            window = tvl_obj.get('window', '7d')
+            ts = tvl_obj.get('timestamps', [])
+            series = tvl_obj.get('tvl', [])
+            stats = tvl_obj.get('stats', {})
+            if series:
+                start_v = stats.get('start_value', series[0])
+                end_v = stats.get('end_value', series[-1])
+                chg = stats.get('abs_change', end_v - start_v)
+                pct = stats.get('pct_change', ((end_v - start_v) / start_v * 100) if start_v else 0)
+                min_v = stats.get('min_value')
+                max_v = stats.get('max_value')
+                min_d = stats.get('min_date')
+                max_d = stats.get('max_date')
+                trend = stats.get('trend')
+                formatted_parts.append(
+                    f"{protocol.title()} TVL ({window}) – start ${round(float(start_v),2)}, end ${round(float(end_v),2)}, "
+                    f"change ${round(float(chg),2)} ({round(float(pct),2)}%), min ${round(float(min_v),2)} on {min_d}, "
+                    f"max ${round(float(max_v),2)} on {max_d}, trend {trend}"
+                )
+            else:
+                formatted_parts.append(f"{protocol.title()} TVL ({window}) data available")
+
         return " | ".join(formatted_parts) if formatted_parts else "No additional data available"
+
+    def _compute_tvl_stats(self, timestamps: List[int], tvl: List[float]) -> Dict[str, Any]:
+        try:
+            if not tvl:
+                return {}
+            n = len(tvl)
+            start_value = float(tvl[0])
+            end_value = float(tvl[-1])
+            abs_change = end_value - start_value
+            pct_change = (abs_change / start_value * 100.0) if start_value else 0.0
+            min_idx = int(min(range(n), key=lambda i: tvl[i]))
+            max_idx = int(max(range(n), key=lambda i: tvl[i]))
+            min_value = float(tvl[min_idx])
+            max_value = float(tvl[max_idx])
+            avg = float(mean(tvl)) if n > 0 else 0.0
+            vol = float(pstdev(tvl)) if n > 1 else 0.0
+            # Trend detection with a small threshold for noise
+            threshold = 0.005  # 0.5%
+            trend = 'flat'
+            if start_value > 0:
+                rel = (end_value - start_value) / start_value
+                if rel > threshold:
+                    trend = 'up'
+                elif rel < -threshold:
+                    trend = 'down'
+            # Dates
+            def to_date(i: int) -> str:
+                try:
+                    ts = timestamps[i] if i < len(timestamps) else None
+                    return datetime.fromtimestamp(ts/1000).date().isoformat() if ts else f"t[{i}]"
+                except Exception:
+                    return f"t[{i}]"
+            return {
+                'start_value': start_value,
+                'end_value': end_value,
+                'abs_change': abs_change,
+                'pct_change': pct_change,
+                'min_value': min_value,
+                'max_value': max_value,
+                'min_index': min_idx,
+                'max_index': max_idx,
+                'min_date': to_date(min_idx),
+                'max_date': to_date(max_idx),
+                'avg': avg,
+                'volatility': vol,
+                'trend': trend,
+            }
+        except Exception:
+            return {}
+
+    def _compose_tvl_reply(self, protocol: str, window: str, stats: Dict[str, Any]) -> str:
+        try:
+            if not stats:
+                return ""
+            start_v = stats.get('start_value')
+            end_v = stats.get('end_value')
+            abs_change = stats.get('abs_change')
+            pct_change = stats.get('pct_change')
+            min_v = stats.get('min_value')
+            max_v = stats.get('max_value')
+            min_d = stats.get('min_date')
+            max_d = stats.get('max_date')
+            trend = stats.get('trend', 'flat')
+            if start_v is None or end_v is None:
+                return ""
+            arrow = '↑' if (pct_change or 0) > 0 else ('↓' if (pct_change or 0) < 0 else '→')
+            lines = [
+                f"{protocol.title()} TVL ({window}) {arrow}",
+                f"- Start → End: ${start_v:,.0f} → ${end_v:,.0f} ({abs_change:+,.0f}, {pct_change:+.2f}%)",
+            ]
+            if min_v is not None and max_v is not None:
+                lines.append(f"- Range: min ${min_v:,.0f} on {min_d}, max ${max_v:,.0f} on {max_d}")
+            lines.append(f"- Trend: {trend}")
+            lines.append("- See the TVL chart panel on the right for details.")
+            return "\n".join(lines)
+        except Exception:
+            return ""
 
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt when no persona manager is available"""
@@ -508,5 +705,6 @@ class Agent:
         return ChatResponse(
             reply=agent_response.reply,
             panels=agent_response.panels,
-            sources=agent_response.sources
+            sources=agent_response.sources,
+            conversation_id=agent_response.conversation_id,
         )

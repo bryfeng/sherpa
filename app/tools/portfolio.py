@@ -133,19 +133,28 @@ async def get_portfolio(address: str, chain: str = "ethereum") -> ToolEnvelope:
                 price_usd=price if price > 0 else None,
                 value_usd=value
             ))
-        
-        # Calculate total portfolio value
-        total_value = sum(
-            (token.value_usd or Decimal("0")) for token in tokens
-        )
-        
+
+        # Filter out spam and zero-value tokens, then sort by USD value desc
+        def _is_spam(tok: TokenBalance) -> bool:
+            return tok.symbol.startswith("[SPAM]") or tok.name.startswith("[SPAM]")
+
+        filtered_tokens = [
+            t for t in tokens
+            if (t.value_usd is not None and t.value_usd > 0) and not _is_spam(t)
+        ]
+
+        filtered_tokens.sort(key=lambda t: (t.value_usd or Decimal("0")), reverse=True)
+
+        # Calculate total portfolio value from filtered tokens only
+        total_value = sum((t.value_usd or Decimal("0")) for t in filtered_tokens)
+
         # Build portfolio
         portfolio = Portfolio(
             address=address,
             chain=chain,
             total_value_usd=total_value,
-            token_count=len(tokens),
-            tokens=tokens
+            token_count=len(filtered_tokens),
+            tokens=filtered_tokens
         )
         
         # Calculate latency

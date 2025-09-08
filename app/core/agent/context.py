@@ -38,6 +38,7 @@ class ConversationContext(BaseModel):
     compressed_history: Optional[str] = Field(default=None, description="Compressed older conversation history")
     user_preferences: Dict[str, Any] = Field(default_factory=dict, description="User-specific preferences")
     portfolio_context: Optional[Dict[str, Any]] = Field(default=None, description="Latest portfolio data for context")
+    episodic_focus: Optional[Dict[str, Any]] = Field(default=None, description="Conversation-scoped active focus (entity/metric/timeframe)")
 
 
 class ContextManager:
@@ -145,6 +146,33 @@ class ContextManager:
         if include_portfolio and context.portfolio_context:
             portfolio_summary = self._format_portfolio_context(context.portfolio_context)
             context_parts.append(f"Current portfolio context: {portfolio_summary}")
+
+        # Add episodic focus if present
+        if context.episodic_focus:
+            ef = context.episodic_focus
+            try:
+                entity = ef.get('protocol') or ef.get('entity') or 'unknown'
+                metric = ef.get('metric') or 'metric'
+                timeframe = ef.get('window') or ef.get('timeframe') or 'recent'
+                chain = ef.get('chain') or 'ethereum'
+                summary_bits = []
+                stats = ef.get('stats') or {}
+                if stats:
+                    start_v = stats.get('start_value')
+                    end_v = stats.get('end_value')
+                    pct = stats.get('pct_change')
+                    if start_v is not None and end_v is not None and pct is not None:
+                        summary_bits.append(f"start ${start_v:,.0f} → end ${end_v:,.0f} ({pct:+.2f}%)")
+                    trend = stats.get('trend')
+                    if trend:
+                        summary_bits.append(f"trend {trend}")
+                summary = ", ".join(summary_bits) if summary_bits else "available"
+                context_parts.append(
+                    f"Active focus: {entity} {metric} ({timeframe}) on {chain} – {summary}"
+                )
+            except Exception:
+                # Best-effort; ignore formatting issues
+                pass
         
         # Add user preferences
         user_id = self._extract_user_id(conversation_id)
@@ -154,6 +182,22 @@ class ContextManager:
                 context_parts.append(f"User preferences: {json.dumps(prefs, indent=None)}")
         
         return "\n\n".join(context_parts) if context_parts else ""
+
+    async def set_active_focus(self, conversation_id: str, focus: Dict[str, Any]) -> None:
+        """Set the conversation's active focus (episodic memory)."""
+        if conversation_id not in self._conversations:
+            self._conversations[conversation_id] = ConversationContext(
+                conversation_id=conversation_id
+            )
+        context = self._conversations[conversation_id]
+        context.episodic_focus = focus
+        context.last_activity = datetime.now()
+        self.logger.info(f"Set episodic focus for conversation {conversation_id}: {list(focus.keys())}")
+
+    def get_active_focus(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """Get the current active focus for the conversation, if any."""
+        ctx = self._conversations.get(conversation_id)
+        return ctx.episodic_focus if ctx else None
     
     async def integrate_portfolio_data(self, conversation_id: str, portfolio_data: Dict[str, Any]) -> None:
         """Integrate portfolio data into conversation context"""

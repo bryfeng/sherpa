@@ -14,3 +14,4 @@ class ChatResponse(BaseModel):
     reply: str = Field(description="Chat response text")
     panels: Dict[str, Any] = Field(default_factory=dict, description="Structured data panels")
     sources: list = Field(default_factory=list, description="Data sources used")
+    conversation_id: Optional[str] = Field(default=None, description="Conversation identifier for memory continuity")
