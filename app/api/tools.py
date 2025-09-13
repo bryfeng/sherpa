@@ -4,6 +4,7 @@ from ..types import PortfolioResponse
 from ..tools.portfolio import get_portfolio
 from ..tools.defillama import get_tvl_series, get_tvl_current
 from ..tools.polymarket import fetch_markets
+from ..providers.coingecko import CoingeckoProvider
 
 router = APIRouter(prefix="/tools")
 
@@ -72,3 +73,21 @@ async def get_polymarket_markets(
         return {"markets": markets}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch Polymarket markets: {str(e)}")
+
+
+@router.get("/prices/top")
+async def get_top_prices(
+    limit: int = Query(5, ge=1, le=10),
+    exclude_stable: bool = Query(True),
+):
+    """Return top coins by market cap with USD price and 24h change."""
+    try:
+        provider = CoingeckoProvider()
+        if not await provider.ready():
+            raise HTTPException(status_code=503, detail="Price provider unavailable")
+        coins = await provider.get_top_coins(limit=limit, exclude_stable=exclude_stable)
+        return {"success": True, "coins": coins}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch top prices: {str(e)}")

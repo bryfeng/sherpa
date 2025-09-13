@@ -35,7 +35,7 @@ This system has been completely transformed from basic hardcoded responses to a 
 
 ### 1. Setup Environment
 ```bash
-cd agentic_wallet_py
+cd sherpa
 ./setup.sh
 ```
 
@@ -292,6 +292,45 @@ The system uses a sophisticated multi-layer architecture:
 - **`GET /tools/portfolio`** - Raw portfolio data (JSON)
 - **`POST /chat`** - AI-powered conversational analysis ⭐
 
+### Tools Endpoints
+- **`GET /tools/defillama/tvl`** — DefiLlama TVL timeseries for a protocol
+  - Query params: `protocol=uniswap` `range=7d|30d`
+  - Response: `{ timestamps: number[], tvl: number[], source: 'defillama' }`
+  - Example:
+    ```bash
+    curl "http://localhost:8000/tools/defillama/tvl?protocol=uniswap&range=7d"
+    ```
+
+- **`GET /tools/defillama/current`** — Latest TVL point for a protocol
+  - Query params: `protocol=uniswap`
+  - Response: `{ timestamp: number, tvl: number, source: 'defillama' }`
+
+- **`GET /tools/polymarket/markets`** — Trending/search markets (MVP)
+  - Query params: `query=` `limit=5`
+  - Response: `{ markets: Array<{ id, question, yesPrice, noPrice, url }> }`
+  - Config: Set `POLYMARKET_BASE_URL` to use a real API; falls back to a small mock when unset.
+  - Example:
+    ```bash
+    curl "http://localhost:8000/tools/polymarket/markets?query=ETH&limit=5"
+    ```
+
+### Swap (MVP)
+- **`POST /swap/quote`** — Simple swap quote estimator (stub)
+  - Body: `{ token_in: 'ETH', token_out: 'USDC', amount_in: 1, slippage_bps?: 50 }`
+  - Response: `{ success, from_token, to_token, amount_in, amount_out_est, price_in_usd, price_out_usd, fee_est, slippage_bps, route, sources, warnings }`
+  - Notes: Uses a static price table and 0.3% fee + slippage reserve. Intended to unblock UI while aggregator integration (0x/1inch) is pending.
+  - Example:
+    ```bash
+    curl -X POST http://localhost:8000/swap/quote \
+      -H "Content-Type: application/json" \
+      -d '{
+        "token_in": "ETH",
+        "token_out": "USDC",
+        "amount_in": 1,
+        "slippage_bps": 50
+      }'
+    ```
+
 ### Chat API Example
 ```bash
 curl -X POST http://localhost:8000/chat \
@@ -374,6 +413,9 @@ TEMPERATURE=0.7
 CONTEXT_WINDOW_SIZE=8000
 CACHE_TTL_SECONDS=300
 MAX_CONCURRENT_REQUESTS=10
+
+# Optional: Tools
+POLYMARKET_BASE_URL=https://api.your-polymarket-proxy.example   # If unset, markets endpoint uses a small mock
 ```
 
 ### LLM Model Options

@@ -138,3 +138,49 @@ class CoingeckoProvider(PriceProvider):
                 "decimals": data.get("detail_platforms", {}).get("ethereum", {}).get("decimal_place", 18),
                 "_source": {"name": "coingecko", "url": "https://coingecko.com"}
             }
+
+    async def get_top_coins(self, limit: int = 5, exclude_stable: bool = True) -> List[Dict[str, Any]]:
+        """Get top coins by market cap, optionally excluding stablecoins."""
+        headers = {}
+        if self.api_key:
+            headers["X-CG-Demo-API-Key"] = self.api_key
+
+        params = {
+            "vs_currency": "usd",
+            "order": "market_cap_desc",
+            "per_page": max(5, min(50, limit + 5)),
+            "page": 1,
+            "sparkline": "false",
+            "price_change_percentage": "24h"
+        }
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{self.base_url}/coins/markets",
+                headers=headers,
+                params=params,
+                timeout=self.timeout_s,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        # Simple stablecoin filter by common symbols/names
+        stable_symbols = {"USDT", "USDC", "BUSD", "DAI", "TUSD", "USDD", "GUSD", "FRAX", "LUSD", "USDE", "PYUSD"}
+        results: List[Dict[str, Any]] = []
+        for item in data:
+            sym = str(item.get("symbol", "")).upper()
+            name = str(item.get("name", ""))
+            if exclude_stable and (sym in stable_symbols or "stable" in name.lower()):
+                continue
+            results.append({
+                "id": item.get("id"),
+                "symbol": sym,
+                "name": name,
+                "price_usd": item.get("current_price"),
+                "change_24h": item.get("price_change_percentage_24h"),
+                "market_cap": item.get("market_cap"),
+                "_source": {"name": "coingecko", "url": "https://coingecko.com"}
+            })
+            if len(results) >= limit:
+                break
+        return results
