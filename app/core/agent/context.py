@@ -5,7 +5,7 @@ This module manages conversation history, context compression, and memory
 for maintaining coherent conversations across multiple interactions.
 """
 
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Deque
 from pydantic import BaseModel, Field
 import logging
 from datetime import datetime, timedelta
@@ -39,6 +39,11 @@ class ConversationContext(BaseModel):
     user_preferences: Dict[str, Any] = Field(default_factory=dict, description="User-specific preferences")
     portfolio_context: Optional[Dict[str, Any]] = Field(default=None, description="Latest portfolio data for context")
     episodic_focus: Optional[Dict[str, Any]] = Field(default=None, description="Conversation-scoped active focus (entity/metric/timeframe)")
+    # New metadata fields for wallet-scoped sessions
+    owner_address: Optional[str] = Field(default=None, description="Lowercased wallet address that owns this conversation")
+    title: Optional[str] = Field(default=None, description="Optional user-defined title")
+    archived: bool = Field(default=False, description="Whether conversation is archived")
+    message_count: int = Field(default=0, description="Number of messages recorded")
 
 
 class ContextManager:
@@ -61,7 +66,97 @@ class ContextManager:
         # In-memory storage for conversations
         # In production, this should be replaced with persistent storage
         self._conversations: Dict[str, ConversationContext] = {}
+        # Index conversations by owner address (lowercased) → most-recent-first deque of IDs
+        self._by_address: Dict[str, Deque[str]] = {}
         self._user_preferences: Dict[str, Dict[str, Any]] = {}
+
+    # -----------------------------
+    # Conversation ID management
+    # -----------------------------
+    def _normalize_address(self, address: Optional[str]) -> Optional[str]:
+        if not address:
+            return None
+        try:
+            return address.lower()
+        except Exception:
+            return address
+
+    def _short_id(self) -> str:
+        # Simple short ID from UUID; avoids external deps
+        return uuid.uuid4().hex[:8]
+
+    def _register_conversation(self, conversation_id: str, owner_address: Optional[str]) -> None:
+        """Ensure a ConversationContext exists and is indexed by address."""
+        if conversation_id not in self._conversations:
+            self._conversations[conversation_id] = ConversationContext(conversation_id=conversation_id)
+        if owner_address:
+            addr = self._normalize_address(owner_address)
+            ctx = self._conversations[conversation_id]
+            if not ctx.owner_address:
+                ctx.owner_address = addr
+            dq = self._by_address.setdefault(addr, deque())
+            # Move to front if already present; else appendleft
+            try:
+                if conversation_id in dq:
+                    dq.remove(conversation_id)
+            except ValueError:
+                pass
+            dq.appendleft(conversation_id)
+
+    def create_conversation_id(self, address: Optional[str]) -> str:
+        """Create a new conversation ID scoped to address or guest."""
+        addr = self._normalize_address(address)
+        prefix = addr if addr else 'guest'
+        conv_id = f"{prefix}-{self._short_id()}"
+        self._register_conversation(conv_id, addr)
+        return conv_id
+
+    def get_or_create_conversation(
+        self,
+        address: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        reuse_hours: int = 24
+    ) -> str:
+        """
+        Determine the effective conversation_id to use for this turn.
+        - If conversation_id provided, use it (creating the record if missing) and bind to address if provided.
+        - Else, if address provided, reuse latest active conversation within reuse_hours; otherwise create new.
+        - Else create a guest conversation.
+        """
+        now = datetime.now()
+        addr = self._normalize_address(address)
+
+        if conversation_id:
+            # Ensure exists and bind to address if available
+            self._register_conversation(conversation_id, addr)
+            # Update last activity timestamp
+            self._conversations[conversation_id].last_activity = now
+            return conversation_id
+
+        if addr:
+            dq = self._by_address.get(addr)
+            if dq:
+                reuse_cutoff = now - timedelta(hours=reuse_hours)
+                # Find first non-archived conversation within reuse window
+                for cid in list(dq):
+                    ctx = self._conversations.get(cid)
+                    if not ctx:
+                        # Clean stray id
+                        try:
+                            dq.remove(cid)
+                        except ValueError:
+                            pass
+                        continue
+                    if ctx.archived:
+                        continue
+                    if ctx.last_activity >= reuse_cutoff:
+                        ctx.last_activity = now
+                        return cid
+            # Otherwise create new bound to address
+            return self.create_conversation_id(addr)
+
+        # No address, create guest session
+        return self.create_conversation_id(None)
     
     async def add_message(
         self,
@@ -97,6 +192,7 @@ class ContextManager:
         # Add message to context
         context.messages.append(conv_message)
         context.last_activity = datetime.now()
+        context.message_count += 1
         
         if conv_message.tokens:
             context.total_tokens += conv_message.tokens
@@ -284,11 +380,59 @@ class ContextManager:
         
         for conv_id in conversations_to_remove:
             del self._conversations[conv_id]
+            # Remove from address index if present
+            for addr, dq in list(self._by_address.items()):
+                try:
+                    if conv_id in dq:
+                        dq.remove(conv_id)
+                except ValueError:
+                    pass
+                if not dq:
+                    del self._by_address[addr]
         
         if conversations_to_remove:
             self.logger.info(f"Cleaned up {len(conversations_to_remove)} old conversations")
         
         return len(conversations_to_remove)
+
+    # -----------------------------
+    # Listing and updates
+    # -----------------------------
+    def list_conversations(self, address: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """List recent conversations for an address (most-recent-first)."""
+        addr = self._normalize_address(address)
+        dq = self._by_address.get(addr, deque())
+        items: List[Dict[str, Any]] = []
+        for cid in list(dq)[: max(1, limit)]:
+            ctx = self._conversations.get(cid)
+            if not ctx:
+                continue
+            items.append({
+                'conversation_id': cid,
+                'title': ctx.title or None,
+                'last_activity': ctx.last_activity.isoformat(),
+                'message_count': ctx.message_count,
+                'archived': ctx.archived,
+            })
+        return items
+
+    def update_conversation(self, conversation_id: str, *, title: Optional[str] = None, archived: Optional[bool] = None) -> Optional[Dict[str, Any]]:
+        """Update title/archived and return summary or None if not found."""
+        ctx = self._conversations.get(conversation_id)
+        if not ctx:
+            return None
+        if title is not None:
+            ctx.title = title
+        if archived is not None:
+            ctx.archived = bool(archived)
+        ctx.last_activity = datetime.now()
+        return {
+            'conversation_id': conversation_id,
+            'title': ctx.title or None,
+            'last_activity': ctx.last_activity.isoformat(),
+            'message_count': ctx.message_count,
+            'archived': ctx.archived,
+        }
     
     async def _compress_context(self, context: ConversationContext) -> None:
         """Compress older parts of conversation to reduce token usage"""

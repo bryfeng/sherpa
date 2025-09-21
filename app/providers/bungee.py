@@ -1,3 +1,4 @@
+import os
 import httpx
 from typing import Any, Dict, Optional
 from ..config import settings
@@ -12,8 +13,18 @@ class BungeeProvider:
     """
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, timeout_s: int = 20):
-        self.api_key = api_key or getattr(settings, 'bungee_api_key', '')
-        self.base_url = base_url or getattr(settings, 'bungee_base_url', 'https://api.socket.tech')
+        # Try explicit args → settings → environment → defaults
+        self.api_key = (
+            api_key
+            or getattr(settings, 'bungee_api_key', '')
+            or os.environ.get('BUNGEE_API_KEY', '')
+        )
+        self.base_url = (
+            base_url
+            or getattr(settings, 'bungee_base_url', '')
+            or os.environ.get('BUNGEE_BASE_URL', '')
+            or 'https://api.socket.tech'
+        )
         self.timeout_s = timeout_s
 
     async def quote(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -33,4 +44,3 @@ class BungeeProvider:
             )
             resp.raise_for_status()
             return resp.json()
-

@@ -57,11 +57,22 @@ async def run_chat(request: ChatRequest) -> ChatResponse:
     try:
         # Get the agent instance
         agent = _get_agent()
+
+        # Determine effective conversation_id (wallet-scoped reuse)
+        effective_conversation_id = None
+        try:
+            if agent.context_manager:
+                effective_conversation_id = agent.context_manager.get_or_create_conversation(
+                    address=getattr(request, 'address', None),
+                    conversation_id=getattr(request, 'conversation_id', None),
+                )
+        except Exception as e:
+            _logger.warning(f"Conversation routing fallback: {str(e)}")
         
         # Process the message through the agent
         agent_response = await agent.process_message(
             request=request,
-            conversation_id=getattr(request, 'conversation_id', None),
+            conversation_id=effective_conversation_id or getattr(request, 'conversation_id', None),
             persona_name=getattr(request, 'persona', None)
         )
         

@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api import health, tools, chat, swap
+from .api import health, tools, chat, swap, conversations
 from .api import bungee as bungee_api
 from .config import settings
 
@@ -28,6 +28,7 @@ app.include_router(tools.router, tags=["Tools"])
 app.include_router(chat.router, tags=["Chat"])
 app.include_router(swap.router, tags=["Swap"])
 app.include_router(bungee_api.router, tags=["Bungee"])
+app.include_router(conversations.router, tags=["Conversations"])
 
 
 @app.get("/")

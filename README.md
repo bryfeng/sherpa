@@ -254,7 +254,8 @@ The system uses a sophisticated multi-layer architecture:
 │                     │    │                      │    │                     │
 │  • Alchemy API      │────│  • Structure Format  │    │  • API Keys         │
 │  • CoinGecko API    │    │  • Panel Generation  │    │  • Model Settings   │
-│  • Portfolio Tools  │    │  • Source Attribution│    │  • Persona Configs  │
+│  • Bungee (Socket)  │    │  • Source Attribution│    │  • Persona Configs  │
+│  • Portfolio Tools  │    │                      │    │                     │
 └─────────────────────┘    └──────────────────────┘    └─────────────────────┘
 ```
 
@@ -291,6 +292,9 @@ The system uses a sophisticated multi-layer architecture:
 - **`GET /healthz`** - System and provider health status
 - **`GET /tools/portfolio`** - Raw portfolio data (JSON)
 - **`POST /chat`** - AI-powered conversational analysis ⭐
+- **`GET /conversations?address=0x…`** — List recent conversations for a wallet
+- **`POST /conversations`** — Create a new conversation `{ address, title? }`
+- **`PATCH /conversations/{id}`** — Update `title` or `archived`
 
 ### Tools Endpoints
 - **`GET /tools/defillama/tvl`** — DefiLlama TVL timeseries for a protocol
@@ -304,6 +308,24 @@ The system uses a sophisticated multi-layer architecture:
 - **`GET /tools/defillama/current`** — Latest TVL point for a protocol
   - Query params: `protocol=uniswap`
   - Response: `{ timestamp: number, tvl: number, source: 'defillama' }`
+
+- **`GET /tools/bungee/quote`** — Bridge/swap route quote via Bungee (Socket)
+  - Query params (subset, required unless noted):
+    - `fromChainId` (int), `toChainId` (int)
+    - `fromTokenAddress` (string), `toTokenAddress` (string)
+    - `amount` (string, in smallest units e.g. wei)
+    - `userAddress` (string, optional), `slippage` (float, default 1.0)
+  - Response: `{ success: boolean, quote: {...raw bungee json...} }`
+  - Example (WETH mainnet → WETH polygon, 0.01 ETH):
+    ```bash
+    curl -G "http://localhost:8000/tools/bungee/quote" \
+      --data-urlencode "fromChainId=1" \
+      --data-urlencode "toChainId=137" \
+      --data-urlencode "fromTokenAddress=0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" \
+      --data-urlencode "toTokenAddress=0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619" \
+      --data-urlencode "amount=10000000000000000" \
+      --data-urlencode "slippage=1.0"
+    ```
 
 - **`GET /tools/polymarket/markets`** — Trending/search markets (MVP)
   - Query params: `query=` `limit=5`
@@ -365,6 +387,16 @@ curl -X POST http://localhost:8000/chat \
 }
 ```
 
+### Conversation IDs & Wallet-Scoped Sessions
+- Backend now associates conversations to a wallet address (if provided) and reuses the most recent active conversation for that address when no `conversation_id` is sent.
+- ID format: `{lowercased_address}-{shortid}` (or `guest-{shortid}` when no wallet).
+- Always echo `conversation_id` in every `/chat` response.
+- In-memory only for MVP; old conversations auto-clean after 7+ days of inactivity.
+
+Frontend localStorage keys:
+- Per-address storage: `sherpa.conversation_id:{address}`; guest sessions use `sherpa.conversation_id:guest`.
+- On wallet switch, the frontend loads the stored ID for that address and sends it with the next message; if unknown/expired, the backend returns a fresh ID which the frontend saves.
+
 ## 🧪 Testing & Development
 
 ### Run Test Suite
@@ -381,6 +413,20 @@ python -m pytest tests/test_api.py -v
 # Test LLM providers
 python test_llm_provider.py
 ```
+
+### Run All Tests (Sequential)
+Use the consolidated runner to execute unit tests, start the API, run live API tests, then stop the server:
+```bash
+cd sherpa
+python run_all_tests.py            # defaults to 127.0.0.1:8000
+# or specify host/port
+python run_all_tests.py --host 0.0.0.0 --port 8000
+```
+This runner:
+- Runs `test_agent_system.py`, `test_style_system.py`
+- Starts `uvicorn app.main:app`
+- Runs `tests/test_api.py`, `tests/test_conversations_api.py`
+- Terminates the server and prints a PASS/FAIL summary
 
 ### CLI Development Tools
 ```bash
@@ -408,6 +454,8 @@ LLM_MODEL=claude-3-5-sonnet-20241022
 
 # Optional Settings
 COINGECKO_API_KEY=optional_key
+BUNGEE_API_KEY=optional_key              # If your Bungee tier requires an API key
+BUNGEE_BASE_URL=https://api.socket.tech  # Optional override of base URL
 MAX_TOKENS=4000
 TEMPERATURE=0.7
 CONTEXT_WINDOW_SIZE=8000
@@ -434,7 +482,7 @@ gpt-3.5-turbo               # Faster, cheaper
 
 - **Python 3.11+** 
 - **Required APIs**: Alchemy + Anthropic Claude
-- **Optional APIs**: CoinGecko (for enhanced price data)
+- **Optional APIs**: CoinGecko (price data), Bungee/Socket (bridge quotes)
 - **Memory**: ~100MB base + LLM context (varies by usage)
 - **Network**: Internet connection for API calls
 

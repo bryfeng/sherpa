@@ -106,6 +106,9 @@ class Agent:
                 persona_name
             )
             
+            # Ensure portfolio context is present when wallet is available (proactive fetch once)
+            await self._ensure_portfolio_context(conversation_id, request)
+
             # Step 3: Prepare context (now includes style modifiers)
             context_messages = await self._prepare_context(
                 request, 
@@ -255,10 +258,12 @@ class Agent:
         tool_data = {}
         
         # Check if this looks like a portfolio request
-        if self._needs_portfolio_data(request):
+        needs_portfolio = self._needs_portfolio_data(request)
+        if needs_portfolio:
             try:
                 # Extract wallet address
                 wallet_address = self._extract_wallet_address(request)
+                tool_data['_address'] = wallet_address
                 
                 if wallet_address:
                     # Fetch portfolio data
@@ -275,6 +280,7 @@ class Agent:
                             'error': 'Failed to fetch portfolio data',
                             'warnings': portfolio_result.warnings or []
                         }
+                        tool_data['needs_portfolio'] = True
                         
             except Exception as e:
                 self.logger.error(f"Tool execution error: {str(e)}")
@@ -282,7 +288,8 @@ class Agent:
                     'error': str(e),
                     'warnings': []
                 }
-                
+                tool_data['needs_portfolio'] = True
+        
         return tool_data
 
     def _needs_tvl_data(self, request: ChatRequest) -> bool:
@@ -402,7 +409,21 @@ class Agent:
             summary = self._compose_tvl_reply(protocol, window, stats)
             if summary:
                 reply_text = summary
-            
+
+        # If the user asked for portfolio insights but we couldn't load data, provide a safe, helpful prompt instead of guessing
+        if tool_data.get('needs_portfolio') and 'portfolio' not in tool_data:
+            addr = tool_data.get('_address')
+            if addr:
+                reply_text = (
+                    f"I can analyze your holdings at {addr}, but I couldn't load the latest portfolio data just now. "
+                    f"Would you like me to try again, or specify a different address or chain?"
+                )
+            else:
+                reply_text = (
+                    "I don’t see a wallet address yet. Share an address (e.g., 0x…) "
+                    "or connect your wallet and I’ll analyze your portfolio without guessing."
+                )
+        
         return AgentResponse(
             reply=reply_text,
             panels=panels,
@@ -479,8 +500,12 @@ class Agent:
         # Check for portfolio-related keywords
         last_message = request.messages[-1].content.lower()
         portfolio_keywords = [
-            "portfolio", "balance", "tokens", "holdings", "wallet", 
-            "what's in", "whats in", "analyze", "show me"
+            "portfolio", "balance", "tokens", "holdings", "wallet",
+            "what's in", "whats in", "analyze", "analysis", "show me",
+            "performance", "performing", "returns", "pnl", "gain", "loss",
+            "rotate", "rotation", "rebalance", "re-balance", "allocation",
+            "diversify", "exposure", "concentration", "positions", "assets",
+            "coins"
         ]
         
         return any(keyword in last_message for keyword in portfolio_keywords)
@@ -628,17 +653,42 @@ class Agent:
     def _get_default_system_prompt(self) -> str:
         """Get default system prompt when no persona manager is available"""
         
-        return """You are a knowledgeable and friendly crypto portfolio assistant. 
+        return """You are a knowledgeable and friendly crypto portfolio assistant.
         
-        Your role is to help users understand and analyze their cryptocurrency portfolios. 
-        You should:
-        - Provide clear, helpful analysis of wallet data
-        - Explain crypto concepts in accessible terms
-        - Offer insights about portfolio composition and trends
-        - Be encouraging and supportive
-        - Maintain a conversational, approachable tone
+        Scope:
+        - Focus strictly on crypto portfolios, tokens, protocols, and wallet analytics.
+        - Treat ambiguous requests (e.g., “rotate”, “performance”) as crypto portfolio topics by default.
         
-        When portfolio data is available, focus on providing meaningful insights about the holdings, their values, and portfolio composition."""
+        Guardrails:
+        - Never invent or assume specific holdings. If portfolio data is unavailable, ask for a wallet address or permission to analyze it.
+        - If data appears inconsistent, briefly acknowledge uncertainty and ask a targeted clarification.
+        
+        Style:
+        - Be concise, actionable, and concrete.
+        - Prefer bullet points for insights and recommendations.
+        
+        When portfolio data is available, prioritize:
+        - Allocation breakdown, concentration, diversification
+        - Recent performance, notable movers, risk flags
+        - Clear next steps (e.g., rebalance ideas, questions to confirm preferences)"""
+
+    async def _ensure_portfolio_context(self, conversation_id: str, request: ChatRequest) -> None:
+        """Proactively fetch and cache portfolio context if address is provided and context is missing."""
+        try:
+            if not (self.context_manager and request.address):
+                return
+            # Check current context for portfolio
+            ctx = self.context_manager._conversations.get(conversation_id) if hasattr(self.context_manager, '_conversations') else None
+            if ctx and getattr(ctx, 'portfolio_context', None):
+                return
+            wallet_address = self._extract_wallet_address(request)
+            if not wallet_address:
+                return
+            portfolio_result = await get_portfolio(wallet_address, request.chain)
+            if portfolio_result.data:
+                await self.context_manager.integrate_portfolio_data(conversation_id, portfolio_result.data.model_dump())
+        except Exception as e:
+            self.logger.debug(f"Proactive portfolio fetch skipped: {e}")
 
     async def _handle_style_processing(
         self,
