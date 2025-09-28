@@ -1,3 +1,4 @@
+from decimal import Decimal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -30,6 +31,32 @@ class Settings(BaseSettings):
     # Provider Toggles
     enable_alchemy: bool = Field(default=True, description="Enable Alchemy provider")
     enable_coingecko: bool = Field(default=True, description="Enable Coingecko provider")
+
+    # Pro entitlement (token gating)
+    pro_token_address: str = Field(
+        default="",
+        description="Contract address that unlocks Pro access when held",
+    )
+    pro_token_chain: str = Field(
+        default="ethereum",
+        description="Chain identifier for the entitlement token",
+    )
+    pro_token_standard: str = Field(
+        default="erc20",
+        description="Token standard for entitlement (erc20, erc721, erc1155)",
+    )
+    pro_token_id: str | None = Field(
+        default=None,
+        description="Specific token ID required for ERC-1155 gating (decimal or hex)",
+    )
+    pro_token_decimals: int = Field(
+        default=18,
+        description="Decimals for ERC-20 entitlement balance checks",
+    )
+    pro_token_min_balance: Decimal = Field(
+        default=Decimal("0"),
+        description="Minimum balance required to unlock Pro (human units)",
+    )
 
     # LLM Provider Settings
     llm_provider: str = Field(default="anthropic", description="Default LLM provider")

@@ -186,3 +186,69 @@ class AlchemyProvider(IndexerProvider):
                 metadata[addr] = fallback_metadata
         
         return metadata
+
+    async def get_token_balance_for_contract(self, address: str, token_address: str, chain: str = "ethereum") -> Dict[str, Any]:
+        """Get balance for a specific ERC-20 contract"""
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "alchemy_getTokenBalances",
+            "params": [address, [token_address]],
+            "id": 1,
+        }
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                self.base_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=self.timeout_s,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if "error" in data:
+                raise Exception(f"Alchemy error: {data['error']}")
+
+            token_balances = data.get("result", {}).get("tokenBalances", [])
+            if not token_balances:
+                return {"contractAddress": token_address, "tokenBalance": "0x0"}
+
+            entry = token_balances[0]
+            return {
+                "contractAddress": entry.get("contractAddress", token_address),
+                "tokenBalance": entry.get("tokenBalance", "0x0"),
+            }
+
+    async def get_owned_nfts(
+        self,
+        address: str,
+        contract_address: str,
+        chain: str = "ethereum",
+        page_size: int = 25,
+    ) -> Dict[str, Any]:
+        """Fetch NFT ownership details for a specific contract"""
+
+        params = [
+            ("owner", address),
+            ("withMetadata", "false"),
+            ("pageSize", str(page_size)),
+            ("contractAddresses[]", contract_address),
+        ]
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self.base_url}/getNFTs/",
+                params=params,
+                timeout=self.timeout_s,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if "error" in data:
+                raise Exception(f"Alchemy error: {data['error']}")
+
+            return {
+                "total": data.get("totalCount", 0),
+                "owned_nfts": data.get("ownedNfts", []),
+                "pageKey": data.get("pageKey"),
+            }

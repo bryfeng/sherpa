@@ -378,8 +378,18 @@ class Agent:
         
         if 'portfolio' in tool_data:
             portfolio_info = tool_data['portfolio']
-            panels['portfolio'] = portfolio_info['data']
-            sources.extend(portfolio_info['sources'])
+            portfolio_sources = portfolio_info.get('sources', [])
+            panels['portfolio_overview'] = {
+                'id': 'portfolio_overview',
+                'kind': 'portfolio',
+                'title': 'Your Portfolio Snapshot',
+                'payload': portfolio_info['data'],
+                'sources': portfolio_sources,
+                'metadata': {
+                    'warnings': portfolio_info.get('warnings', []),
+                },
+            }
+            sources.extend(portfolio_sources)
 
         # Add DefiLlama TVL panel if available
         if 'defillama_tvl' in tool_data:
@@ -389,6 +399,12 @@ class Agent:
             protocol = tvl_info.get('protocol', 'uniswap')
             window = tvl_info.get('window', '7d')
             # Panel with normalized shape for frontend transformer
+            tvl_sources = tvl_info.get('sources') or [
+                {
+                    'name': 'DefiLlama',
+                    'url': f'https://defillama.com/protocol/{protocol}'
+                }
+            ]
             panels['uniswap_tvl_chart'] = {
                 'kind': 'chart',
                 'title': f'{protocol.title()} TVL ({window})',
@@ -396,14 +412,17 @@ class Agent:
                     'timestamps': ts,
                     'tvl': tvl,
                     'unit': 'USD',
-                    'source': {
-                        'name': 'DefiLlama',
-                        'url': f'https://defillama.com/protocol/{protocol}'
-                    },
+                    'protocol': protocol,
+                    'window': window,
+                    'stats': tvl_info.get('stats', {}),
+                },
+                'sources': tvl_sources,
+                'metadata': {
+                    'stats': tvl_info.get('stats', {}),
                 },
             }
             # Attribution
-            sources.append({'name': 'DefiLlama', 'url': 'https://defillama.com'})
+            sources.extend(tvl_sources)
             # Deterministic short analysis to avoid LLM disclaimers
             stats = tvl_info.get('stats') or {}
             summary = self._compose_tvl_reply(protocol, window, stats)
