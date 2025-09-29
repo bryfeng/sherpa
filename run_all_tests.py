@@ -4,8 +4,8 @@ Run all backend tests sequentially for the Sherpa API.
 
 Order:
 1) Unit tests (no server):
-   - test_agent_system.py
-   - test_style_system.py
+   - tests/test_agent_system.py
+   - tests/test_style_system.py
 2) Start local API server (uvicorn app.main:app)
 3) Live API tests (require server):
    - tests/test_api.py
@@ -66,7 +66,7 @@ def main():
     failures: list[tuple[str, int]] = []
 
     # 1) Unit tests (no server)
-    for script in ["test_agent_system.py", "test_style_system.py"]:
+    for script in ["tests/test_agent_system.py", "tests/test_style_system.py"]:
         code = run_cmd([_python_exec(), script], cwd=base_dir, name=script)
         if code != 0:
             failures.append((script, code))

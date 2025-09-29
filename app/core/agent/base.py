@@ -5,19 +5,91 @@ This module contains the main Agent class that orchestrates LLM interactions,
 persona management, and tool integration for intelligent portfolio analysis.
 """
 
-from typing import Dict, List, Optional, Any, Union
-from pydantic import BaseModel, Field
+import copy
 import logging
+import re
 from datetime import datetime
-import uuid
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from statistics import mean, pstdev
+from typing import Any, Dict, List, Optional, Tuple, Union
+import uuid
 
+import httpx
+from pydantic import BaseModel, Field
+
+from ...providers.bungee import BungeeProvider
+from ...providers.coingecko import CoingeckoProvider
 from ...providers.llm.base import LLMProvider, LLMMessage, LLMResponse
+from ...tools.defillama import get_tvl_series
+from ...tools.portfolio import get_portfolio
 from ...types.requests import ChatRequest, ChatMessage
 from ...types.responses import ChatResponse
-from ...tools.portfolio import get_portfolio
-from ...tools.defillama import get_tvl_series
 from .styles import StyleManager, ResponseStyle
+
+
+BRIDGE_KEYWORDS = (
+    'bridge',
+    'bridging',
+    'move to',
+    'send to',
+    'transfer to',
+    'port to',
+)
+
+BRIDGE_FOLLOWUP_KEYWORDS = (
+    'quote',
+    'retry',
+    'try again',
+    'again',
+    'get the quote',
+    'get quote',
+    'do it',
+    'go ahead',
+    'please',
+)
+
+CHAIN_METADATA: Dict[int, Dict[str, Any]] = {
+    1: {
+        'name': 'Ethereum',
+        'aliases': ['ethereum', 'eth', 'mainnet'],
+        'native_symbol': 'ETH',
+    },
+    8453: {
+        'name': 'Base',
+        'aliases': ['base', 'base mainnet'],
+        'native_symbol': 'ETH',
+    },
+    42161: {
+        'name': 'Arbitrum',
+        'aliases': ['arbitrum', 'arb'],
+        'native_symbol': 'ETH',
+    },
+    10: {
+        'name': 'Optimism',
+        'aliases': ['optimism', 'op'],
+        'native_symbol': 'ETH',
+    },
+    137: {
+        'name': 'Polygon',
+        'aliases': ['polygon', 'matic', 'matic pos'],
+        'native_symbol': 'MATIC',
+    },
+}
+
+CHAIN_ALIAS_TO_ID: Dict[str, int] = {
+    alias: chain_id
+    for chain_id, details in CHAIN_METADATA.items()
+    for alias in details.get('aliases', [])
+}
+
+DEFAULT_CHAIN_NAME_TO_ID: Dict[str, int] = {
+    details['name'].lower(): chain_id for chain_id, details in CHAIN_METADATA.items()
+}
+
+NATIVE_PLACEHOLDER = '0x0000000000000000000000000000000000000000'
+USD_UNITS = {'usd', 'dollar', 'dollars', 'usdc', 'buck', 'bucks'}
+ETH_UNITS = {'eth', 'weth'}
+BRIDGE_SOURCE = {'name': 'Socket (Bungee)', 'url': 'https://socket.tech'}
 
 
 class AgentResponse(BaseModel):
@@ -67,6 +139,10 @@ class Agent:
         self._active_conversations: Dict[str, Dict] = {}
         # Style state per conversation
         self._conversation_styles: Dict[str, ResponseStyle] = {}
+        # Lightweight cache for frequently used market data
+        self._eth_price_cache: Optional[Tuple[Dict[str, Any], datetime]] = None
+        # Track in-progress bridge requests per conversation for follow-ups
+        self._pending_bridge: Dict[str, Dict[str, Any]] = {}
         
     async def process_message(
         self,
@@ -117,7 +193,7 @@ class Agent:
             )
             
             # Step 4: Execute tools if needed
-            tool_data = await self._execute_tools(request)
+            tool_data = await self._execute_tools(request, conversation_id)
             # Add TVL data if applicable
             try:
                 if self._needs_tvl_data(request):
@@ -252,11 +328,11 @@ class Agent:
             
         return context_messages
 
-    async def _execute_tools(self, request: ChatRequest) -> Dict[str, Any]:
+    async def _execute_tools(self, request: ChatRequest, conversation_id: str) -> Dict[str, Any]:
         """Execute relevant tools based on the chat request"""
-        
+
         tool_data = {}
-        
+
         # Check if this looks like a portfolio request
         needs_portfolio = self._needs_portfolio_data(request)
         if needs_portfolio:
@@ -289,7 +365,12 @@ class Agent:
                     'warnings': []
                 }
                 tool_data['needs_portfolio'] = True
-        
+
+        # Bridge quote / execution prep when user explicitly asks to bridge
+        bridge_quote = await self._maybe_fetch_bridge_quote(request, conversation_id)
+        if bridge_quote:
+            tool_data['bridge_quote'] = bridge_quote
+
         return tool_data
 
     def _needs_tvl_data(self, request: ChatRequest) -> bool:
@@ -429,6 +510,23 @@ class Agent:
             if summary:
                 reply_text = summary
 
+        bridge_info = tool_data.get('bridge_quote')
+        if bridge_info:
+            panel = bridge_info.get('panel')
+            if panel and isinstance(panel, dict):
+                panel_id = panel.get('id', 'bungee_bridge_quote')
+                panels[panel_id] = panel
+                panel_sources = panel.get('sources') or []
+                if panel_sources:
+                    sources.extend(panel_sources)
+            summary_reply = bridge_info.get('summary_reply')
+            if summary_reply:
+                reply_text = summary_reply
+            else:
+                message = bridge_info.get('message')
+                if message:
+                    reply_text = message
+
         # If the user asked for portfolio insights but we couldn't load data, provide a safe, helpful prompt instead of guessing
         if tool_data.get('needs_portfolio') and 'portfolio' not in tool_data:
             addr = tool_data.get('_address')
@@ -540,13 +638,646 @@ class Agent:
         if request.messages:
             last_message = request.messages[-1].content
             # Simple regex for Ethereum addresses
-            import re
             pattern = r'0x[a-fA-F0-9]{40}'
             matches = re.findall(pattern, last_message)
             if matches:
                 return matches[0]
                 
         return None
+
+    async def _maybe_fetch_bridge_quote(self, request: ChatRequest, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """Detect bridge intent, call the public Bungee API, and persist follow-up context."""
+
+        if not request.messages:
+            return None
+
+        latest_message = request.messages[-1].content.strip()
+        if not latest_message:
+            return None
+
+        message_lower = latest_message.lower()
+        pending_state = self._pending_bridge.get(conversation_id)
+
+        explicit_bridge = self._is_bridge_query(message_lower)
+        followup = False
+        if not explicit_bridge and pending_state:
+            followup = self._is_bridge_followup(message_lower)
+
+        if not explicit_bridge and not followup:
+            return None
+
+        context = pending_state.get('context', {}) if pending_state else {}
+        current_context: Dict[str, Any] = dict(context)
+        user_address = self._extract_wallet_address(request) or context.get('user_address')
+
+        def finalize_result(
+            status: str,
+            *,
+            message: Optional[str] = None,
+            panel: Optional[Dict[str, Any]] = None,
+            summary_reply: Optional[str] = None,
+            summary_tool: Optional[str] = None,
+            extra: Optional[Dict[str, Any]] = None,
+            context_updates: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            result: Dict[str, Any] = {'status': status}
+            if message:
+                result['message'] = message
+            if panel:
+                result['panel'] = panel
+            if summary_reply:
+                result['summary_reply'] = summary_reply
+            if summary_tool:
+                result['summary_tool'] = summary_tool
+            if extra:
+                result.update(extra)
+
+            merged_context = {k: v for k, v in current_context.items() if v is not None}
+            if context_updates:
+                merged_context.update({k: v for k, v in context_updates.items() if v is not None})
+
+            pending_entry = {
+                'context': merged_context,
+                'last_prompt': latest_message,
+                'status': status,
+                'last_result': result,
+            }
+            if panel:
+                pending_entry['panel'] = panel
+            if summary_reply:
+                pending_entry['summary_reply'] = summary_reply
+            if summary_tool:
+                pending_entry['summary_tool'] = summary_tool
+            self._pending_bridge[conversation_id] = pending_entry
+            return result
+
+        if not user_address:
+            return finalize_result(
+                'needs_address',
+                message='I can prep a Bungee bridge, but I need the wallet address that will sign it.',
+            )
+
+        from_chain_id = current_context.get('from_chain_id')
+        to_chain_id = current_context.get('to_chain_id')
+        if explicit_bridge:
+            chain_params = self._infer_bridge_params(message_lower, getattr(request, 'chain', None))
+            from_chain_id = chain_params.get('from_chain_id') or from_chain_id
+            to_chain_id = chain_params.get('to_chain_id') or to_chain_id
+        if from_chain_id is None:
+            from_chain_id = 1
+        if to_chain_id is None:
+            return finalize_result(
+                'needs_chain',
+                message='Which chain should I bridge to? Try “bridge … to Base/Arbitrum/Optimism/Polygon”.',
+                context_updates={'user_address': user_address, 'from_chain_id': from_chain_id},
+            )
+        current_context.update({'user_address': user_address, 'from_chain_id': from_chain_id, 'to_chain_id': to_chain_id})
+
+        amount_eth: Optional[Decimal] = None
+        amount_usd: Optional[Decimal] = None
+        price_info: Optional[Dict[str, Any]] = pending_state.get('price') if pending_state else None
+
+        if explicit_bridge:
+            amount_result = await self._resolve_bridge_amount(message_lower)
+            if amount_result.get('status') != 'ok':
+                status = amount_result.get('status', 'needs_amount')
+                if status == 'price_unavailable':
+                    msg = 'I could not fetch the current ETH price to convert the USD amount. Try again soon or specify the amount in ETH.'
+                elif status == 'needs_amount':
+                    msg = 'Tell me how much to bridge — e.g., “bridge 0.05 ETH” or “bridge $25 worth of ETH to Base”.'
+                else:
+                    msg = 'Unable to determine the bridge amount from that request.'
+                return finalize_result(status, message=msg)
+            amount_eth = amount_result['amount_eth']
+            amount_usd = amount_result.get('amount_usd')
+            price_info = amount_result.get('price')
+        else:
+            if current_context.get('amount_eth') is not None:
+                try:
+                    amount_eth = Decimal(str(current_context['amount_eth']))
+                except (InvalidOperation, TypeError, ValueError):
+                    amount_eth = None
+            if current_context.get('amount_usd') is not None:
+                try:
+                    amount_usd = Decimal(str(current_context['amount_usd']))
+                except (InvalidOperation, TypeError, ValueError):
+                    amount_usd = None
+
+        if amount_eth is None:
+            return finalize_result(
+                'needs_amount',
+                message='Tell me how much to bridge — e.g., “bridge 0.05 ETH” or “bridge $25 worth of ETH to Base”.',
+            )
+
+        from_decimals = 18
+        try:
+            amount_wei_dec = (amount_eth * (Decimal(10) ** from_decimals)).quantize(Decimal('1'), rounding=ROUND_DOWN)
+        except (InvalidOperation, ValueError):
+            return finalize_result(
+                'needs_amount',
+                message='The bridge amount looks invalid. Try a slightly larger value.',
+            )
+
+        if amount_wei_dec <= 0:
+            return finalize_result(
+                'needs_amount',
+                message='The bridge amount is too small to execute.',
+            )
+
+        amount_wei = str(int(amount_wei_dec))
+        amount_eth_str = self._decimal_to_str(amount_eth)
+        amount_usd_str = self._decimal_to_str(amount_usd) if amount_usd is not None else None
+        current_context.update({'amount_eth': amount_eth_str, 'amount_usd': amount_usd_str, 'amount_wei': amount_wei})
+
+        from_symbol = self._chain_native_symbol(from_chain_id)
+        to_symbol = self._chain_native_symbol(to_chain_id)
+
+        quote_params = {
+            'originChainId': str(from_chain_id),
+            'destinationChainId': str(to_chain_id),
+            'userAddress': user_address,
+            'receiverAddress': user_address,
+            'inputToken': NATIVE_PLACEHOLDER,
+            'outputToken': NATIVE_PLACEHOLDER,
+            'inputAmount': amount_wei,
+            'enableManual': 'true',
+        }
+
+        panel_payload: Dict[str, Any] = {
+            'from_chain_id': from_chain_id,
+            'from_chain': self._chain_name(from_chain_id),
+            'to_chain_id': to_chain_id,
+            'to_chain': self._chain_name(to_chain_id),
+            'amounts': {
+                'requested_eth': amount_eth_str,
+                'requested_usd': amount_usd_str,
+                'input_amount_wei': amount_wei,
+            },
+            'price_reference': {
+                'usd': str(price_info['price']) if price_info and price_info.get('price') else None,
+                'source': price_info.get('source') if price_info else None,
+            },
+            'status': 'pending',
+        }
+
+        pending_entry = {
+            'context': {k: v for k, v in current_context.items() if v is not None},
+            'quote_params': copy.deepcopy(quote_params),
+            'price': price_info,
+            'last_prompt': latest_message,
+        }
+        self._pending_bridge[conversation_id] = pending_entry
+
+        provider = BungeeProvider()
+
+        try:
+            quote_response = await provider.quote(quote_params)
+        except httpx.HTTPStatusError as exc:  # type: ignore
+            status_code = exc.response.status_code
+            message = (
+                'Bungee rejected the request (401). Add a valid BUNGEE_API_KEY to enable automated bridges.'
+                if status_code == 401
+                else f'Bungee quote failed with status {status_code}.'
+            )
+            panel_payload.setdefault('issues', []).append(message)
+            panel_payload['status'] = 'error'
+            summary = (
+                f"Bridge {amount_eth_str} {from_symbol} from {self._chain_name(from_chain_id)} → {self._chain_name(to_chain_id)}."
+                f"\n⚠️ {message}"
+            )
+            panel = {
+                'id': 'bungee_bridge_quote',
+                'kind': 'card',
+                'title': f"Bungee Bridge: {from_symbol} → {to_symbol}",
+                'payload': panel_payload,
+                'sources': [BRIDGE_SOURCE],
+                'metadata': {'status': 'error', 'http_status': status_code},
+            }
+            return finalize_result(
+                'error',
+                message=message,
+                panel=panel,
+                summary_reply=summary,
+                summary_tool=summary,
+                extra={'detail': str(exc)},
+            )
+        except Exception as exc:  # pragma: no cover
+            self.logger.error(f"Bungee quote failed: {exc}")
+            message = 'I could not reach Bungee to fetch a bridge route. Please try again shortly.'
+            panel_payload.setdefault('issues', []).append(message)
+            panel_payload['status'] = 'error'
+            summary = (
+                f"Bridge {amount_eth_str} {from_symbol} from {self._chain_name(from_chain_id)} → {self._chain_name(to_chain_id)}."
+                f"\n⚠️ {message}"
+            )
+            panel = {
+                'id': 'bungee_bridge_quote',
+                'kind': 'card',
+                'title': f"Bungee Bridge: {from_symbol} → {to_symbol}",
+                'payload': panel_payload,
+                'sources': [BRIDGE_SOURCE],
+                'metadata': {'status': 'error'},
+            }
+            return finalize_result(
+                'error',
+                message=message,
+                panel=panel,
+                summary_reply=summary,
+                summary_tool=summary,
+                extra={'detail': str(exc)},
+            )
+
+        quote_result = quote_response.get('result') if isinstance(quote_response, dict) else {}
+        if not quote_result:
+            message = 'Bungee did not return any route data for that request.'
+            panel_payload.setdefault('issues', []).append(message)
+            panel_payload['status'] = 'error'
+            panel = {
+                'id': 'bungee_bridge_quote',
+                'kind': 'card',
+                'title': f"Bungee Bridge: {from_symbol} → {to_symbol}",
+                'payload': panel_payload,
+                'sources': [BRIDGE_SOURCE],
+                'metadata': {'status': 'error'},
+            }
+            return finalize_result('error', message=message, panel=panel)
+
+        manual_routes = quote_result.get('manualRoutes') or []
+        default_route = quote_result.get('autoRoute') or {}
+
+        primary_route: Dict[str, Any] = {}
+        route_source = 'manual'
+        if manual_routes:
+            primary_route = manual_routes[0]
+        elif default_route:
+            primary_route = default_route
+            route_source = 'default'
+        else:
+            message = 'Bungee did not return a usable bridge route. Try adjusting the amount or tokens.'
+            panel_payload.setdefault('issues', []).append(message)
+            panel_payload['status'] = 'error'
+            panel = {
+                'id': 'bungee_bridge_quote',
+                'kind': 'card',
+                'title': f"Bungee Bridge: {from_symbol} → {to_symbol}",
+                'payload': panel_payload,
+                'sources': [BRIDGE_SOURCE],
+                'metadata': {'status': 'error'},
+            }
+            return finalize_result('error', message=message, panel=panel)
+
+        quote_id = primary_route.get('quoteId') or quote_result.get('quoteId')
+        route_request_hash = primary_route.get('requestHash') or primary_route.get('routeId')
+
+        panel_payload.update({
+            'quote_id': quote_id,
+            'route_request_hash': route_request_hash,
+            'route_source': route_source,
+            'input': quote_result.get('input'),
+            'output': primary_route.get('output'),
+            'approval_data': primary_route.get('approvalData'),
+            'sign_typed_data': primary_route.get('signTypedData'),
+            'route_details': primary_route,
+        })
+
+        build_payload = None
+        tx_result: Optional[Dict[str, Any]] = None
+        build_error: Optional[str] = None
+
+        if quote_id:
+            build_params = {
+                'quoteId': quote_id,
+            }
+            try:
+                build_response = await provider.build_tx(build_params)
+                build_payload = build_response
+                tx_result = build_response.get('result') if isinstance(build_response, dict) else None
+                panel_payload['tx_ready'] = bool(tx_result)
+            except httpx.HTTPStatusError as exc:  # type: ignore
+                build_error = f'Bungee build-tx failed with status {exc.response.status_code}: {exc.response.text}'
+                panel_payload.setdefault('issues', []).append(build_error)
+                panel_payload['tx_ready'] = False
+            except Exception as exc:  # pragma: no cover
+                build_error = f'Bungee build-tx error: {exc}'
+                panel_payload.setdefault('issues', []).append(build_error)
+                panel_payload['tx_ready'] = False
+        else:
+            build_error = 'Quote did not provide a quoteId for manual build.'
+            panel_payload.setdefault('issues', []).append(build_error)
+            panel_payload['tx_ready'] = False
+
+        input_token = quote_result.get('input', {}).get('token', {})
+        output_token = primary_route.get('output', {}).get('token', {})
+        input_amount_raw = quote_result.get('input', {}).get('amount') or amount_wei
+        output_amount_raw = primary_route.get('output', {}).get('amount')
+        input_decimals = input_token.get('decimals', from_decimals)
+        output_decimals = output_token.get('decimals', 18)
+
+        try:
+            routed_from_amount = Decimal(str(input_amount_raw)) / (Decimal(10) ** int(input_decimals))
+        except (InvalidOperation, TypeError, ValueError):
+            routed_from_amount = amount_eth
+
+        try:
+            routed_to_amount = Decimal(str(output_amount_raw)) / (Decimal(10) ** int(output_decimals)) if output_amount_raw else None
+        except (InvalidOperation, TypeError, ValueError):
+            routed_to_amount = None
+
+        gas_usd = primary_route.get('gasFee')
+        output_usd = primary_route.get('output', {}).get('valueInUsd')
+        eta_seconds = primary_route.get('estimatedTime')
+        eta_readable = self._format_eta_minutes(eta_seconds)
+        bridge_name = (primary_route.get('routeDetails') or {}).get('name')
+        approval_data = primary_route.get('approvalData') or {}
+        needs_approval = bool(approval_data)
+
+        panel_payload['status'] = 'ok' if tx_result else 'quote_only'
+        panel_payload['usd_estimates'] = {
+            'output': output_usd,
+            'gas': gas_usd,
+        }
+        if tx_result:
+            panel_payload['tx'] = tx_result
+        if build_payload:
+            panel_payload['build'] = build_payload
+
+        summary_lines = [
+            f"✅ {self._decimal_to_str(routed_from_amount)} {input_token.get('symbol', from_symbol)} from {self._chain_name(from_chain_id)} → {self._chain_name(to_chain_id)}"
+        ]
+        if routed_to_amount is not None:
+            summary_lines.append(
+                f"Estimated arrival: {self._decimal_to_str(routed_to_amount)} {output_token.get('symbol', to_symbol)}"
+            )
+        if output_usd is not None:
+            try:
+                summary_lines[-1] += f" (~${float(output_usd):.2f})"
+            except (ValueError, TypeError):
+                pass
+        if gas_usd is not None:
+            try:
+                summary_lines.append(f"Bridge cost approx ${float(gas_usd):.2f} in fees")
+            except (ValueError, TypeError):
+                pass
+        if eta_readable:
+            summary_lines.append(f"ETA ≈ {eta_readable}")
+        if bridge_name:
+            summary_lines.append(f"Route: {bridge_name}")
+        if needs_approval:
+            approval_token_address = approval_data.get('tokenAddress')
+            approval_amount = approval_data.get('amount') or approval_data.get('minimumApprovalAmount')
+            approval_line = 'Approve the input token before bridging.'
+            if approval_amount:
+                try:
+                    approval_amt_float = Decimal(str(approval_amount)) / (Decimal(10) ** int(input_decimals))
+                    approval_line = f"Approve {self._decimal_to_str(approval_amt_float)} {input_token.get('symbol', from_symbol)}"
+                except (InvalidOperation, TypeError, ValueError):
+                    approval_line = f"Approve {approval_amount} units"
+            if approval_token_address:
+                approval_line += f" at {approval_token_address}"
+            summary_lines.append(approval_line)
+        if not tx_result:
+            if build_error:
+                summary_lines.append(f"⚠️ Manual build unavailable: {build_error}")
+            else:
+                summary_lines.append('Review the quote details in the bridge panel to proceed manually.')
+
+        summary_reply = "\n".join(summary_lines)
+        summary_tool = (
+            f"Bridge plan: {self._decimal_to_str(routed_from_amount)} {input_token.get('symbol', from_symbol)} → "
+            f"{output_token.get('symbol', to_symbol)} on {self._chain_name(to_chain_id)}"
+        )
+
+        panel_metadata = {
+            'status': panel_payload['status'],
+            'route_source': route_source,
+            'quote_id': quote_id,
+            'route_request_hash': route_request_hash,
+            'needs_approval': needs_approval,
+        }
+
+        panel = {
+            'id': 'bungee_bridge_quote',
+            'kind': 'card',
+            'title': f"Bungee Bridge: {input_token.get('symbol', from_symbol)} → {output_token.get('symbol', to_symbol)}",
+            'payload': panel_payload,
+            'sources': [BRIDGE_SOURCE],
+            'metadata': panel_metadata,
+        }
+
+        pending_entry.update({
+            'status': panel_payload['status'],
+            'panel': panel,
+            'summary_reply': summary_reply,
+            'summary_tool': summary_tool,
+            'last_result': {
+                'status': panel_payload['status'],
+                'panel': panel,
+                'summary_reply': summary_reply,
+                'summary_tool': summary_tool,
+            },
+            'quote_id': quote_id,
+            'route_request_hash': route_request_hash,
+        })
+        self._pending_bridge[conversation_id] = pending_entry
+
+        result_payload: Dict[str, Any] = {
+            'status': panel_payload['status'],
+            'panel': panel,
+            'summary_reply': summary_reply,
+            'summary_tool': summary_tool,
+        }
+        if build_error:
+            result_payload['message'] = build_error
+        if tx_result:
+            result_payload['tx'] = tx_result
+
+        return result_payload
+    def _is_bridge_query(self, message: str) -> bool:
+        if re.search(r'\bbridge\b', message):
+            return True
+        return any(keyword in message for keyword in BRIDGE_KEYWORDS)
+
+    def _is_bridge_followup(self, message: str) -> bool:
+        stripped = message.strip()
+        if not stripped:
+            return False
+        if any(keyword in message for keyword in BRIDGE_FOLLOWUP_KEYWORDS):
+            return True
+        if stripped in {'yes', 'y', 'yep', 'sure', 'ok', 'okay', 'please', 'please do'}:
+            return True
+        return False
+
+    def _infer_bridge_params(self, message: str, default_chain: Optional[str]) -> Dict[str, Optional[int]]:
+        msg = message.lower()
+        to_chain_id = self._detect_chain(msg, ['to', 'onto', 'into', 'towards'])
+        if to_chain_id is None:
+            to_chain_id = self._detect_chain_arrow(msg)
+
+        default_chain_id = None
+        if default_chain:
+            lower = default_chain.lower()
+            default_chain_id = CHAIN_ALIAS_TO_ID.get(lower) or DEFAULT_CHAIN_NAME_TO_ID.get(lower)
+        if default_chain_id is None:
+            default_chain_id = 1
+
+        from_chain_id = self._detect_chain(msg, ['from', 'off', 'out of'])
+        if from_chain_id is None:
+            candidate = self._detect_chain(msg, ['on'])
+            if candidate and candidate != to_chain_id:
+                from_chain_id = candidate
+        if from_chain_id is None:
+            from_chain_id = default_chain_id
+
+        if to_chain_id is None:
+            for alias, chain_id in CHAIN_ALIAS_TO_ID.items():
+                if alias in {'eth', 'ethereum', 'mainnet'}:
+                    continue
+                if alias in msg and chain_id != from_chain_id:
+                    to_chain_id = chain_id
+                    break
+
+        return {'from_chain_id': from_chain_id, 'to_chain_id': to_chain_id}
+
+    def _detect_chain(self, message: str, keywords: List[str]) -> Optional[int]:
+        for alias, chain_id in CHAIN_ALIAS_TO_ID.items():
+            escaped = re.escape(alias)
+            for keyword in keywords:
+                pattern = rf'\b{keyword}\s+{escaped}\b'
+                if re.search(pattern, message):
+                    return chain_id
+        return None
+
+    def _detect_chain_arrow(self, message: str) -> Optional[int]:
+        for alias, chain_id in CHAIN_ALIAS_TO_ID.items():
+            needle = f'->{alias}'
+            if needle in message or f'-> {alias}' in message:
+                return chain_id
+        return None
+
+    async def _resolve_bridge_amount(self, message: str) -> Dict[str, Any]:
+        parsed = self._parse_bridge_amount(message)
+        unit = parsed.get('unit')
+        amount_eth = parsed.get('amount_eth')
+        amount_usd = parsed.get('amount_usd')
+
+        if unit is None or (amount_eth is None and amount_usd is None):
+            return {'status': 'needs_amount'}
+
+        if unit == 'usd':
+            price_info = await self._get_eth_price_usd()
+            if not price_info or not price_info.get('price'):
+                return {'status': 'price_unavailable'}
+            price = price_info['price']
+            try:
+                amount_eth = (amount_usd / price).quantize(Decimal('1e-18'), rounding=ROUND_DOWN)
+            except (InvalidOperation, TypeError):
+                return {'status': 'needs_amount'}
+            if amount_eth <= 0:
+                return {'status': 'needs_amount'}
+            return {
+                'status': 'ok',
+                'amount_eth': amount_eth,
+                'amount_usd': amount_usd,
+                'price': price_info,
+            }
+
+        # amount provided in ETH (or WETH)
+        if amount_eth is None or amount_eth <= 0:
+            return {'status': 'needs_amount'}
+
+        price_info = await self._get_eth_price_usd()
+        usd_value = None
+        if price_info and price_info.get('price'):
+            try:
+                usd_value = (amount_eth * price_info['price']).quantize(Decimal('1e-2'), rounding=ROUND_DOWN)
+            except (InvalidOperation, TypeError):
+                usd_value = None
+
+        return {
+            'status': 'ok',
+            'amount_eth': amount_eth,
+            'amount_usd': usd_value,
+            'price': price_info,
+        }
+
+    def _parse_bridge_amount(self, message: str) -> Dict[str, Optional[Decimal]]:
+        pattern = r'(\$)?\s*(\d+(?:\.\d+)?)\s*(usd|usdc|dollar|dollars|buck|bucks|eth|weth)?'
+        for match in re.finditer(pattern, message):
+            symbol, number, unit = match.groups()
+            try:
+                value = Decimal(number)
+            except (InvalidOperation, TypeError):
+                continue
+            if value <= 0:
+                continue
+            unit_lower = unit.lower() if unit else None
+            if symbol or (unit_lower and unit_lower in USD_UNITS):
+                return {'amount_usd': value, 'amount_eth': None, 'unit': 'usd'}
+            if unit_lower and unit_lower in ETH_UNITS:
+                return {'amount_eth': value, 'amount_usd': None, 'unit': 'eth'}
+
+        return {'amount_eth': None, 'amount_usd': None, 'unit': None}
+
+    async def _get_eth_price_usd(self) -> Optional[Dict[str, Any]]:
+        try:
+            if self._eth_price_cache:
+                cached_value, cached_time = self._eth_price_cache
+                if (datetime.now() - cached_time).total_seconds() < 60:
+                    return cached_value
+        except Exception:
+            pass
+
+        provider = CoingeckoProvider()
+        try:
+            if not await provider.ready():
+                return None
+            data = await provider.get_eth_price()
+        except Exception as exc:  # pragma: no cover
+            self.logger.debug(f"ETH price fetch failed: {exc}")
+            return None
+
+        price = data.get('price_usd')
+        if price is None:
+            return None
+
+        price_info = {
+            'price': Decimal(str(price)),
+            'source': data.get('_source'),
+        }
+        self._eth_price_cache = (price_info, datetime.now())
+        return price_info
+
+    def _decimal_to_str(self, value: Decimal, places: int = 6) -> str:
+        precision = max(0, min(places, 18))
+        quant = Decimal('1') if precision == 0 else Decimal(1).scaleb(-precision)
+        try:
+            quantized = value.quantize(quant, rounding=ROUND_DOWN)
+        except (InvalidOperation, TypeError):
+            quantized = value
+        formatted = format(quantized.normalize(), 'f')
+        if '.' in formatted:
+            formatted = formatted.rstrip('0').rstrip('.')
+        return formatted or '0'
+
+    def _chain_name(self, chain_id: int) -> str:
+        meta = CHAIN_METADATA.get(chain_id)
+        return meta.get('name') if meta else f'Chain {chain_id}'
+
+    def _chain_native_symbol(self, chain_id: int) -> str:
+        meta = CHAIN_METADATA.get(chain_id)
+        return meta.get('native_symbol', 'ETH') if meta else 'ETH'
+
+    def _format_eta_minutes(self, seconds: Optional[Any]) -> Optional[str]:
+        try:
+            sec = float(seconds)
+        except (TypeError, ValueError):
+            return None
+        if sec <= 0:
+            return None
+        if sec < 90:
+            return f"{sec:.0f} sec"
+        minutes = sec / 60.0
+        return f"{minutes:.1f} min"
 
     def _format_tool_data_for_llm(self, tool_data: Dict[str, Any]) -> str:
         """Format tool data into a readable context for the LLM"""
@@ -589,6 +1320,16 @@ class Agent:
                 )
             else:
                 formatted_parts.append(f"{protocol.title()} TVL ({window}) data available")
+
+        if 'bridge_quote' in tool_data:
+            bridge_info = tool_data['bridge_quote']
+            summary = bridge_info.get('summary_tool')
+            if summary:
+                formatted_parts.append(summary)
+            else:
+                message = bridge_info.get('message')
+                if message:
+                    formatted_parts.append(f"Bridge status: {message}")
 
         return " | ".join(formatted_parts) if formatted_parts else "No additional data available"
 

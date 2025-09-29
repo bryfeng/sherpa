@@ -314,7 +314,7 @@ The system uses a sophisticated multi-layer architecture:
     - `fromChainId` (int), `toChainId` (int)
     - `fromTokenAddress` (string), `toTokenAddress` (string)
     - `amount` (string, in smallest units e.g. wei)
-    - `userAddress` (string, optional), `slippage` (float, default 1.0)
+    - `userAddress` (string, required for public API), `receiverAddress` (string, optional)
   - Response: `{ success: boolean, quote: {...raw bungee json...} }`
   - Example (WETH mainnet → WETH polygon, 0.01 ETH):
     ```bash
@@ -324,8 +324,10 @@ The system uses a sophisticated multi-layer architecture:
       --data-urlencode "fromTokenAddress=0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" \
       --data-urlencode "toTokenAddress=0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619" \
       --data-urlencode "amount=10000000000000000" \
-      --data-urlencode "slippage=1.0"
+      --data-urlencode "userAddress=0x50ac5cfcc81bb0872e85255d7079f8a529345d16"
     ```
+  - The chat agent persists bridge context (chains, amount, wallet) so follow-up prompts like “can you get the quote first?” reuse the pending request automatically.
+  - Public calls fall back to `public-backend.bungee.exchange` and then `api.socket.tech`; if both return 401, supply `BUNGEE_API_KEY` and retry.
 
 - **`GET /tools/polymarket/markets`** — Trending/search markets (MVP)
   - Query params: `query=` `limit=5`
@@ -438,6 +440,9 @@ python cli.py portfolio 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
 
 # Health check all providers
 python cli.py health
+
+# Smoke test the public Bungee integration
+python -m sherpa.tests.test_bungee_public
 ```
 
 ## ⚙️ Configuration
@@ -454,8 +459,8 @@ LLM_MODEL=claude-3-5-sonnet-20241022
 
 # Optional Settings
 COINGECKO_API_KEY=optional_key
-BUNGEE_API_KEY=optional_key              # If your Bungee tier requires an API key
-BUNGEE_BASE_URL=https://api.socket.tech  # Optional override of base URL
+BUNGEE_API_KEY=optional_key              # Adds auth when Socket returns 401 for the public tier
+BUNGEE_BASE_URL=https://api.socket.tech  # Override the default host rotation (public-backend + api.socket.tech)
 MAX_TOKENS=4000
 TEMPERATURE=0.7
 CONTEXT_WINDOW_SIZE=8000

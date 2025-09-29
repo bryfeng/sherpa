@@ -10,7 +10,14 @@ This tests the dynamic response style adaptation features including:
 
 import asyncio
 import logging
+import sys
 from datetime import datetime
+from pathlib import Path
+
+# Ensure the sherpa package root is importable when executed directly
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+if str(PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_ROOT))
 
 from app.providers.llm.anthropic import AnthropicProvider
 from app.core.agent.base import Agent
