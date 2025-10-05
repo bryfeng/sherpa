@@ -254,7 +254,7 @@ The system uses a sophisticated multi-layer architecture:
 │                     │    │                      │    │                     │
 │  • Alchemy API      │────│  • Structure Format  │    │  • API Keys         │
 │  • CoinGecko API    │    │  • Panel Generation  │    │  • Model Settings   │
-│  • Bungee (Socket)  │    │  • Source Attribution│    │  • Persona Configs  │
+│  • Relay Aggregator  │    │  • Source Attribution│    │  • Persona Configs  │
 │  • Portfolio Tools  │    │                      │    │                     │
 └─────────────────────┘    └──────────────────────┘    └─────────────────────┘
 ```
@@ -263,10 +263,16 @@ The system uses a sophisticated multi-layer architecture:
 
 #### 🤖 **Agent System** (`app/core/agent/`)
 - **`base.py`**: Core Agent orchestrator managing the entire conversation flow
+- **`graph.py`**: LangGraph-powered pipeline coordinating style, tooling, and LLM steps
 - **`personas.py`**: AI personality manager that loads from external YAML files
 - **`styles.py`**: Dynamic response style system for customizing communication format
 - **`context.py`**: Conversation memory, history management, and context compression
 - **Smart tool integration**: Seamlessly incorporates portfolio data into LLM context
+
+#### 🌉 **Bridge Subsystem** (`app/core/bridge/`)
+- **`manager.py`**: Dedicated bridge orchestrator handling intent parsing and Relay quotes/transactions
+- **`constants.py`**: Chain metadata, keyword aliases, and API defaults shared across bridge flows
+- **`models.py`**: Typed state/result containers used by the bridge manager
 
 #### 🎭 **Persona Configuration** (`personas/`)
 - **`friendly.yaml`**: Friendly Crypto Guide configuration
@@ -309,25 +315,34 @@ The system uses a sophisticated multi-layer architecture:
   - Query params: `protocol=uniswap`
   - Response: `{ timestamp: number, tvl: number, source: 'defillama' }`
 
-- **`GET /tools/bungee/quote`** — Bridge/swap route quote via Bungee (Socket)
-  - Query params (subset, required unless noted):
-    - `fromChainId` (int), `toChainId` (int)
-    - `fromTokenAddress` (string), `toTokenAddress` (string)
-    - `amount` (string, in smallest units e.g. wei)
-    - `userAddress` (string, required for public API), `receiverAddress` (string, optional)
-  - Response: `{ success: boolean, quote: {...raw bungee json...} }`
-  - Example (WETH mainnet → WETH polygon, 0.01 ETH):
+- **`POST /tools/relay/quote`** — Bridge quote via Relay
+  - Body fields (required unless noted):
+    - `user` (address of the initiating wallet, also used as the recipient unless overridden)
+    - `originChainId` / `destinationChainId`
+    - `originCurrency` / `destinationCurrency` (token addresses, use `0x000…0000` for native assets)
+    - `amount` (string, smallest units)
+    - Optional flags: `referrer`, `useExternalLiquidity`, `useDepositAddress`, `topupGas`
+  - Response: `{ success: boolean, quote: {...raw relay response...} }`
+  - Example (0.001 ETH mainnet → Base):
     ```bash
-    curl -G "http://localhost:8000/tools/bungee/quote" \
-      --data-urlencode "fromChainId=1" \
-      --data-urlencode "toChainId=137" \
-      --data-urlencode "fromTokenAddress=0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" \
-      --data-urlencode "toTokenAddress=0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619" \
-      --data-urlencode "amount=10000000000000000" \
-      --data-urlencode "userAddress=0x50ac5cfcc81bb0872e85255d7079f8a529345d16"
+    curl -X POST "http://localhost:8000/tools/relay/quote" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "user": "0x50ac5CFcc81BB0872e85255D7079F8a529345D16",
+        "originChainId": 1,
+        "destinationChainId": 8453,
+        "originCurrency": "0x0000000000000000000000000000000000000000",
+        "destinationCurrency": "0x0000000000000000000000000000000000000000",
+        "recipient": "0x50ac5CFcc81BB0872e85255D7079F8a529345D16",
+        "tradeType": "EXACT_INPUT",
+        "amount": "1000000000000000",
+        "referrer": "sherpa.chat",
+        "useExternalLiquidity": false,
+        "useDepositAddress": false,
+        "topupGas": false
+      }'
     ```
-  - The chat agent persists bridge context (chains, amount, wallet) so follow-up prompts like “can you get the quote first?” reuse the pending request automatically.
-  - Public calls fall back to `public-backend.bungee.exchange` and then `api.socket.tech`; if both return 401, supply `BUNGEE_API_KEY` and retry.
+  - The chat agent persists bridge context (chains, amount, wallet) so follow-up prompts like “refresh bridge quote” reuse the pending request automatically.
 
 - **`GET /tools/polymarket/markets`** — Trending/search markets (MVP)
   - Query params: `query=` `limit=5`
@@ -441,8 +456,8 @@ python cli.py portfolio 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
 # Health check all providers
 python cli.py health
 
-# Smoke test the public Bungee integration
-python -m sherpa.tests.test_bungee_public
+# Smoke test the public Relay integration
+python -m sherpa.tests.test_relay_public
 ```
 
 ## ⚙️ Configuration
@@ -459,8 +474,7 @@ LLM_MODEL=claude-3-5-sonnet-20241022
 
 # Optional Settings
 COINGECKO_API_KEY=optional_key
-BUNGEE_API_KEY=optional_key              # Adds auth when Socket returns 401 for the public tier
-BUNGEE_BASE_URL=https://api.socket.tech  # Override the default host rotation (public-backend + api.socket.tech)
+RELAY_BASE_URL=https://api.relay.link    # Override the default relay API host
 MAX_TOKENS=4000
 TEMPERATURE=0.7
 CONTEXT_WINDOW_SIZE=8000
@@ -487,7 +501,7 @@ gpt-3.5-turbo               # Faster, cheaper
 
 - **Python 3.11+** 
 - **Required APIs**: Alchemy + Anthropic Claude
-- **Optional APIs**: CoinGecko (price data), Bungee/Socket (bridge quotes)
+- **Optional APIs**: CoinGecko (price data), Relay (bridge quotes)
 - **Memory**: ~100MB base + LLM context (varies by usage)
 - **Network**: Internet connection for API calls
 

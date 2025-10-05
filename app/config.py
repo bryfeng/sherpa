@@ -58,6 +58,11 @@ class Settings(BaseSettings):
         description="Minimum balance required to unlock Pro (human units)",
     )
 
+    relay_base_url: str = Field(
+        default="",
+        description="Override the default Relay API base URL",
+    )
+
     # LLM Provider Settings
     llm_provider: str = Field(default="anthropic", description="Default LLM provider")
     anthropic_api_key: str = Field(default="", description="Anthropic API key")
