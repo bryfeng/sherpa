@@ -5,6 +5,7 @@ from ..tools.portfolio import get_portfolio
 from ..tools.defillama import get_tvl_series, get_tvl_current
 from ..tools.polymarket import fetch_markets
 from ..providers.coingecko import CoingeckoProvider
+from ..services.trending import get_trending_tokens
 
 router = APIRouter(prefix="/tools")
 
@@ -91,3 +92,16 @@ async def get_top_prices(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch top prices: {str(e)}")
+
+
+@router.get("/prices/trending")
+async def get_trending_prices(
+    limit: int = Query(10, ge=1, le=25),
+):
+    """Return trending tokens constrained to EVM-compatible contracts."""
+
+    try:
+        tokens = await get_trending_tokens(limit=limit)
+        return {"success": True, "tokens": list(tokens)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch trending prices: {exc}")

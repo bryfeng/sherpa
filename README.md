@@ -25,11 +25,17 @@ This system has been completely transformed from basic hardcoded responses to a 
 - **Real-time Data**: Alchemy blockchain data + CoinGecko price feeds
 - **Structured + Conversational**: Both API data and natural language explanations
 
+### 📈 **Market Intelligence for Action**
+- **Trending EVM Tokens**: Background service pulls high-velocity assets from CoinGecko and filters to Relay-supported EVM chains
+- **Actionable Swaps**: Trending payloads include contract addresses + chain IDs so the chat agent can prepare Relay swap quotes instantly
+- **Future Expansion Ready**: Non-EVM chains (e.g., Solana) are isolated for phased support without disturbing the current flow
+
 ### 🔧 **Developer-Friendly**
 - **Multi-Provider LLM Support**: Currently Anthropic Claude, designed for OpenAI/others
 - **FastAPI Backend**: REST API with automatic OpenAPI documentation
 - **Comprehensive Testing**: Agent system, API integration, and provider testing
 - **CLI Tools**: Command-line interface for development and testing
+- **Reusable Services**: `TrendingTokenService` provides cached, EVM-only market movers for UI and agent workflows
 
 ## 🚀 Quick Start
 
@@ -74,6 +80,12 @@ python cli.py portfolio 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
 ```bash
 python main.py
 # Visit http://localhost:8000/docs for API documentation
+```
+
+### 5. Explore Market Trends (Optional)
+```bash
+# Returns Relay-ready trending tokens filtered to EVM chains
+curl "http://localhost:8000/tools/prices/trending?limit=10"
 ```
 
 ## 🎭 AI Persona System

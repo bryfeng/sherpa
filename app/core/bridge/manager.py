@@ -237,6 +237,7 @@ class BridgeManager:
             'wallet': {'address': user_address},
             'provider': 'relay',
             'relay_request': relay_payload,
+            'quote_type': 'bridge',
         }
 
         pending_entry = BridgeState(

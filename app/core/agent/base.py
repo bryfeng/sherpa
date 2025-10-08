@@ -21,6 +21,7 @@ from ...tools.portfolio import get_portfolio
 from ...types.requests import ChatRequest, ChatMessage
 from ...types.responses import ChatResponse
 from ..bridge import BridgeManager
+from ..swap import SwapManager
 from .styles import StyleManager, ResponseStyle
 from .graph import build_agent_process_graph
 
@@ -74,8 +75,9 @@ class Agent:
         self._conversation_styles: Dict[str, ResponseStyle] = {}
         # LangGraph pipeline orchestrating the processing flow
         self._process_graph = build_agent_process_graph(self)
-        # Bridge orchestration manager
+        # Bridge + swap orchestration managers
         self.bridge_manager = BridgeManager(logger=self.logger)
+        self.swap_manager = SwapManager(logger=self.logger)
         
     async def process_message(
         self,
@@ -375,6 +377,23 @@ class Agent:
                 reply_text = summary_reply
             else:
                 message = bridge_info.get('message')
+                if message:
+                    reply_text = message
+
+        swap_info = tool_data.get('swap_quote')
+        if swap_info:
+            panel = swap_info.get('panel')
+            if panel and isinstance(panel, dict):
+                panel_id = panel.get('id', 'relay_swap_quote')
+                panels[panel_id] = panel
+                panel_sources = panel.get('sources') or []
+                if panel_sources:
+                    sources.extend(panel_sources)
+            summary_reply = swap_info.get('summary_reply')
+            if summary_reply:
+                reply_text = summary_reply
+            else:
+                message = swap_info.get('message')
                 if message:
                     reply_text = message
 

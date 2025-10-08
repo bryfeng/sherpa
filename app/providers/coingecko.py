@@ -1,7 +1,10 @@
+import asyncio
+import math
 import httpx
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from ..config import settings
 from .base import PriceProvider
+from ..services.evm import chain_id_from_coingecko_platform, is_evm_chain
 
 
 class CoingeckoProvider(PriceProvider):
@@ -13,6 +16,7 @@ class CoingeckoProvider(PriceProvider):
     def __init__(self):
         self.api_key = settings.coingecko_api_key
         self.base_url = "https://api.coingecko.com/api/v3"
+        self._platform_cache: Dict[str, Dict[str, str]] = {}
         
     async def ready(self) -> bool:
         return settings.enable_coingecko  # API key is optional for basic tier
@@ -154,15 +158,12 @@ class CoingeckoProvider(PriceProvider):
             "price_change_percentage": "24h"
         }
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(
-                f"{self.base_url}/coins/markets",
-                headers=headers,
-                params=params,
-                timeout=self.timeout_s,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        data = await self._fetch_market_trending(params)
+        if data is None:
+            await asyncio.sleep(2)
+            data = await self._fetch_market_trending(params)
+            if data is None:
+                return []
 
         # Simple stablecoin filter by common symbols/names
         stable_symbols = {"USDT", "USDC", "BUSD", "DAI", "TUSD", "USDD", "GUSD", "FRAX", "LUSD", "USDE", "PYUSD"}
@@ -184,3 +185,197 @@ class CoingeckoProvider(PriceProvider):
             if len(results) >= limit:
                 break
         return results
+
+    async def get_trending_evm_tokens(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return trending tokens constrained to EVM-compatible chains."""
+
+        if not await self.ready():
+            return []
+
+        headers = {}
+        if self.api_key:
+            headers["X-CG-Demo-API-Key"] = self.api_key
+
+        search_payload = await self._fetch_search_trending() or []
+        if not search_payload:
+            return []
+
+        trending: List[Dict[str, Any]] = []
+        stable_symbols = {
+            "USDT",
+            "USDC",
+            "BUSD",
+            "DAI",
+            "TUSD",
+            "USDD",
+            "GUSD",
+            "FRAX",
+            "LUSD",
+            "USDE",
+            "PYUSD",
+            "FDUSD",
+            "USD+",
+            "USDP",
+        }
+
+        def _parse_number(value: Any) -> Optional[float]:
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                cleaned = value.replace("$", "").replace(",", "").strip()
+                if cleaned:
+                    try:
+                        return float(cleaned)
+                    except ValueError:
+                        return None
+            return None
+
+        for entry in search_payload:
+            item = entry.get("item") or {}
+            symbol = str(item.get("symbol", "")).upper()
+            if not symbol or symbol in stable_symbols:
+                continue
+
+            coin_id = str(item.get("id", ""))
+            if not coin_id:
+                continue
+
+            platforms = await self._get_coin_platforms(coin_id)
+            matching_chain_id: Optional[int] = None
+            contract_address: Optional[str] = None
+            platform_name: Optional[str] = None
+
+            for platform, address in platforms.items():
+                chain_id = chain_id_from_coingecko_platform(platform)
+                if chain_id is not None and address and is_evm_chain(chain_id):
+                    matching_chain_id = chain_id
+                    contract_address = str(address).lower()
+                    platform_name = platform
+                    break
+
+            if matching_chain_id is None and platforms:
+                platform_name, address = next(iter(platforms.items()))
+                contract_address = str(address).lower() if address else None
+
+            if matching_chain_id is None and not platforms:
+                platform_name = None
+
+            data_blob = item.get("data") or {}
+            price_usd = _parse_number(data_blob.get("price"))
+            if price_usd is None or not math.isfinite(price_usd) or price_usd <= 0:
+                continue
+
+            change_dict = data_blob.get("price_change_percentage_24h") or {}
+            change_24h = _parse_number(change_dict.get("usd")) if isinstance(change_dict, dict) else None
+            volume_24h = _parse_number(data_blob.get("total_volume"))
+            market_cap = _parse_number(data_blob.get("market_cap"))
+
+            trending.append(
+                {
+                    "id": coin_id,
+                    "symbol": symbol,
+                    "name": item.get("name"),
+                    "price_usd": price_usd,
+                    "change_1h": None,
+                    "change_24h": change_24h,
+                    "volume_24h": volume_24h,
+                    "market_cap": market_cap,
+                    "platform": platform_name,
+                    "contract_address": contract_address,
+                    "chain_id": matching_chain_id,
+                    "_source": {"name": "coingecko", "url": "https://coingecko.com"},
+                }
+            )
+
+            if len(trending) >= limit:
+                break
+
+        return trending
+
+    async def _get_coin_platforms(self, coin_id: str) -> Dict[str, str]:
+        cached = self._platform_cache.get(coin_id)
+        if cached is not None:
+            return cached
+
+        headers = {}
+        if self.api_key:
+            headers["X-CG-Demo-API-Key"] = self.api_key
+
+        params = {
+            "localization": "false",
+            "tickers": "false",
+            "market_data": "false",
+            "community_data": "false",
+            "developer_data": "false",
+            "sparkline": "false",
+        }
+
+        if not self.api_key:
+            await asyncio.sleep(0.3)
+
+        async with httpx.AsyncClient() as client:
+            for attempt in range(2):
+                try:
+                    resp = await client.get(
+                        f"{self.base_url}/coins/{coin_id}",
+                        headers=headers,
+                        params=params,
+                        timeout=self.timeout_s,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    break
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 429:
+                        if attempt == 0:
+                            await asyncio.sleep(2)
+                            continue
+                        return {}
+                    raise
+            else:
+                return {}
+
+        platforms: Dict[str, Any] = data.get("platforms") or {}
+        normalized = {k: str(v).lower() for k, v in platforms.items() if v}
+        self._platform_cache[coin_id] = normalized
+        return normalized
+
+    async def _fetch_market_trending(self, params: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+        headers = {}
+        if self.api_key:
+            headers["X-CG-Demo-API-Key"] = self.api_key
+
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.get(
+                    f"{self.base_url}/coins/markets",
+                    headers=headers,
+                    params=params,
+                    timeout=self.timeout_s,
+                )
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    return None
+                raise
+            return resp.json()
+
+    async def _fetch_search_trending(self) -> Optional[List[Dict[str, Any]]]:
+        headers = {}
+        if self.api_key:
+            headers["X-CG-Demo-API-Key"] = self.api_key
+
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.get(
+                    f"{self.base_url}/search/trending",
+                    headers=headers,
+                    timeout=self.timeout_s,
+                )
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    return None
+                raise
+            payload = resp.json()
+        return payload.get("coins", [])

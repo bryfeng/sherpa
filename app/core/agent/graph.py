@@ -96,6 +96,23 @@ def build_agent_process_graph(agent: "Agent"):
             tool_data['bridge_quote'] = bridge_quote
         return {'tool_data': tool_data}
 
+    async def handle_swap(state: AgentProcessState) -> AgentProcessState:
+        tool_data = dict(state.get('tool_data', {}))
+        wallet_address = tool_data.get('_address')
+        if wallet_address is None:
+            wallet_address = agent._extract_wallet_address(state['request'])  # pylint: disable=protected-access
+            if wallet_address:
+                tool_data['_address'] = wallet_address
+        swap_quote = await agent.swap_manager.maybe_handle(
+            state['request'],
+            state['conversation_id'],
+            wallet_address=wallet_address,
+            default_chain=getattr(state['request'], 'chain', None),
+        )
+        if swap_quote:
+            tool_data['swap_quote'] = swap_quote
+        return {'tool_data': tool_data}
+
     async def augment_tvl(state: AgentProcessState) -> AgentProcessState:
         tool_data = dict(state.get('tool_data', {}))
         try:
@@ -166,6 +183,7 @@ def build_agent_process_graph(agent: "Agent"):
     graph.add_node('prepare_context', prepare_context)
     graph.add_node('execute_tools', execute_tools)
     graph.add_node('augment_tvl', augment_tvl)
+    graph.add_node('handle_swap', handle_swap)
     graph.add_node('handle_bridge', handle_bridge)
     graph.add_node('generate_llm', generate_llm)
     graph.add_node('format_response', format_response)
@@ -189,7 +207,8 @@ def build_agent_process_graph(agent: "Agent"):
     graph.add_edge('ensure_portfolio', 'prepare_context')
     graph.add_edge('prepare_context', 'execute_tools')
     graph.add_edge('execute_tools', 'handle_bridge')
-    graph.add_edge('handle_bridge', 'augment_tvl')
+    graph.add_edge('handle_bridge', 'handle_swap')
+    graph.add_edge('handle_swap', 'augment_tvl')
     graph.add_edge('augment_tvl', 'generate_llm')
     graph.add_edge('generate_llm', 'format_response')
     graph.add_edge('format_response', 'update_conversation')
