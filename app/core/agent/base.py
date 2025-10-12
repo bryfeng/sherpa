@@ -8,9 +8,9 @@ persona management, and tool integration for intelligent portfolio analysis.
 import copy
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from statistics import mean, pstdev
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 import uuid
 
 import httpx
@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from ...providers.llm.base import LLMProvider, LLMMessage, LLMResponse
 from ...tools.portfolio import get_portfolio
+from ...services.trending import get_trending_tokens
 from ...types.requests import ChatRequest, ChatMessage
 from ...types.responses import ChatResponse
 from ..bridge import BridgeManager
@@ -224,6 +225,63 @@ class Agent:
                 }
                 tool_data['needs_portfolio'] = True
 
+        # Check if trending token intelligence is relevant
+        trending_query = self._extract_trending_query(request)
+        needs_trending = self._needs_trending_data(request)
+        if needs_trending or trending_query:
+            try:
+                fetch_limit = 25 if trending_query else 12
+                raw_tokens = list(await get_trending_tokens(limit=fetch_limit))
+                fetched_at = datetime.now(timezone.utc).isoformat()
+                focus_token = self._match_trending_token(raw_tokens, trending_query) if trending_query else None
+
+                panel_limit = 10
+                tokens_for_panel = raw_tokens[:panel_limit]
+                focus_identity = self._token_identity(focus_token) if focus_token else ''
+                if focus_token and focus_identity:
+                    in_panel = any(
+                        self._token_identity(token) == focus_identity
+                        for token in tokens_for_panel
+                    )
+                    if not in_panel:
+                        tokens_for_panel.append(focus_token)
+
+                trending_sources = self._collect_trending_sources(tokens_for_panel)
+                tool_data['trending_tokens'] = {
+                    'tokens': tokens_for_panel,
+                    'fetched_at': fetched_at,
+                    'query': trending_query,
+                    'focus': focus_token,
+                    'total_available': len(raw_tokens),
+                    'sources': trending_sources,
+                }
+
+                if focus_token and self.context_manager:
+                    try:
+                        await self.context_manager.set_active_focus(  # type: ignore[attr-defined]
+                            conversation_id,
+                            {
+                                'entity': focus_token.get('name') or focus_token.get('symbol'),
+                                'symbol': focus_token.get('symbol'),
+                                'metric': 'trending_token',
+                                'window': '24h',
+                                'chain': focus_token.get('platform') or 'multichain',
+                                'stats': {
+                                    'price_usd': focus_token.get('price_usd'),
+                                    'change_24h': focus_token.get('change_24h'),
+                                    'volume_24h': focus_token.get('volume_24h'),
+                                    'market_cap': focus_token.get('market_cap'),
+                                },
+                                'source': 'coingecko',
+                            },
+                        )
+                    except Exception as exc:  # pragma: no cover - logging only
+                        self.logger.warning('Failed setting trending focus: %s', exc)
+
+            except Exception as exc:
+                self.logger.error('Trending token fetch error: %s', exc)
+                tool_data['trending_error'] = str(exc)
+
         return tool_data
 
     def _needs_tvl_data(self, request: ChatRequest) -> bool:
@@ -324,6 +382,38 @@ class Agent:
                 },
             }
             sources.extend(portfolio_sources)
+
+        if 'trending_tokens' in tool_data:
+            trending_info = tool_data['trending_tokens']
+            tokens = trending_info.get('tokens') or []
+            if tokens:
+                panel_id = 'trending_tokens'
+                panel_sources = trending_info.get('sources') or self._collect_trending_sources(tokens)
+                metadata = {
+                    'layout': 'banner',
+                    'totalAvailable': trending_info.get('total_available'),
+                    'query': trending_info.get('query'),
+                    'focusSymbol': (trending_info.get('focus') or {}).get('symbol'),
+                }
+                extra_metadata = trending_info.get('metadata') or {}
+                for key, value in extra_metadata.items():
+                    if value is not None:
+                        metadata[key] = value
+
+                panels[panel_id] = {
+                    'id': panel_id,
+                    'kind': 'trending',
+                    'title': trending_info.get('title') or 'Trending Tokens',
+                    'payload': {
+                        'tokens': tokens,
+                        'fetchedAt': trending_info.get('fetched_at'),
+                        'focusToken': trending_info.get('focus'),
+                        'totalAvailable': trending_info.get('total_available'),
+                    },
+                    'sources': panel_sources,
+                    'metadata': metadata,
+                }
+                sources.extend(panel_sources)
 
         # Add DefiLlama TVL panel if available
         if 'defillama_tvl' in tool_data:
@@ -497,6 +587,150 @@ class Agent:
         
         return any(keyword in last_message for keyword in portfolio_keywords)
 
+    def _needs_trending_data(self, request: ChatRequest) -> bool:
+        """Heuristic detection for trending token queries."""
+
+        if not request.messages:
+            return False
+
+        last_message = request.messages[-1].content.lower()
+        if 'trending' in last_message:
+            return True
+
+        triggers = [
+            'top gainer',
+            'top gainers',
+            'top loser',
+            'top losers',
+            'top coins',
+            'top tokens',
+            'hot coin',
+            'hot token',
+            'momentum coin',
+            'momentum token',
+        ]
+
+        return any(trigger in last_message for trigger in triggers)
+
+    def _extract_trending_query(self, request: ChatRequest) -> Optional[str]:
+        """Extract a specific token symbol/name from a trending-related query."""
+
+        if not request.messages:
+            return None
+
+        message = request.messages[-1].content.strip()
+        if not message:
+            return None
+
+        lowered = message.lower()
+        relevant = (
+            'trending' in lowered
+            or 'token' in lowered
+            or 'coin' in lowered
+            or 'ticker' in lowered
+            or 'symbol' in lowered
+            or 'gainer' in lowered
+            or 'loser' in lowered
+        )
+        if not relevant:
+            return None
+
+        patterns = [
+            r'(?:token|coin|symbol|ticker)\s+([A-Za-z0-9]{2,15})',
+            r'about\s+([A-Za-z0-9]{2,15})\b',
+            r'called\s+([A-Za-z0-9]{2,15})\b',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, message, flags=re.IGNORECASE)
+            if match:
+                candidate = match.group(1).strip().strip(".,;:!\"'`")
+                if 1 < len(candidate) <= 20:
+                    return candidate.upper()
+
+        fallback_matches = re.findall(r'\b[A-Z0-9]{2,10}\b', message)
+        for candidate in reversed(fallback_matches):
+            if candidate and not candidate.isdigit():
+                return candidate.upper()
+
+        return None
+
+    def _match_trending_token(
+        self,
+        tokens: Sequence[Dict[str, Any]],
+        query: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Return the first trending token matching the query by symbol, name, or id."""
+
+        if not query:
+            return None
+
+        q = query.lower()
+
+        def _normalize(value: Any) -> Optional[str]:
+            if value is None:
+                return None
+            text = str(value).strip()
+            return text.lower() if text else None
+
+        for token in tokens:
+            symbol = _normalize(token.get('symbol'))
+            name = _normalize(token.get('name'))
+            coin_id = _normalize(token.get('id'))
+            contract = _normalize(token.get('contract_address'))
+            if q in {symbol, name, coin_id, contract}:
+                return token
+
+        for token in tokens:
+            name = _normalize(token.get('name'))
+            if name and q in name:
+                return token
+
+        return None
+
+    def _token_identity(self, token: Optional[Dict[str, Any]]) -> str:
+        """Return a lowercase identity string for a token to help deduplicate entries."""
+
+        if not token:
+            return ''
+
+        for key in ('id', 'contract_address', 'symbol'):
+            value = token.get(key)
+            if value:
+                text = str(value).strip().lower()
+                if text:
+                    return text
+        return ''
+
+    def _collect_trending_sources(self, tokens: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Aggregate unique data sources from trending token entries."""
+
+        seen = set()
+        sources: List[Dict[str, Any]] = []
+
+        for token in tokens:
+            source = token.get('_source')
+            if not isinstance(source, dict):
+                continue
+            name = (source.get('name') or '').strip()
+            url = (source.get('url') or '').strip()
+            key = (name.lower(), url.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            entry: Dict[str, Any] = {}
+            if name:
+                entry['name'] = name
+            if url:
+                entry['url'] = url
+            if entry:
+                sources.append(entry)
+
+        if not sources:
+            sources.append({'name': 'CoinGecko', 'url': 'https://www.coingecko.com'})
+
+        return sources
+
     def _extract_wallet_address(self, request: ChatRequest) -> Optional[str]:
         """Extract wallet address from request"""
         
@@ -519,6 +753,38 @@ class Agent:
         """Format tool data into a readable context for the LLM"""
         
         formatted_parts = []
+
+        def _fmt_price(value: Any) -> str:
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                return 'n/a'
+            abs_val = abs(val)
+            if abs_val >= 1000:
+                return f"${val:,.0f}"
+            if abs_val >= 1:
+                return f"${val:,.2f}"
+            return f"${val:,.6f}"
+
+        def _fmt_pct(value: Any) -> str:
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                return 'n/a'
+            return f"{val:+.2f}%"
+
+        def _fmt_large(value: Any) -> str:
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                return 'n/a'
+            if val >= 1_000_000_000:
+                return f"${val/1_000_000_000:.2f}B"
+            if val >= 1_000_000:
+                return f"${val/1_000_000:.2f}M"
+            if val >= 1_000:
+                return f"${val/1_000:.2f}K"
+            return f"${val:,.0f}"
         
         if 'portfolio' in tool_data:
             portfolio = tool_data['portfolio']['data']
@@ -531,6 +797,32 @@ class Agent:
         if 'portfolio_error' in tool_data:
             error_info = tool_data['portfolio_error']
             formatted_parts.append(f"Portfolio data unavailable: {error_info['error']}")
+
+        if 'trending_tokens' in tool_data:
+            trending_info = tool_data['trending_tokens']
+            tokens = trending_info.get('tokens') or []
+            if tokens:
+                snippets = []
+                for token in tokens[:5]:
+                    symbol = token.get('symbol') or token.get('name') or 'token'
+                    price_str = _fmt_price(token.get('price_usd'))
+                    change_str = _fmt_pct(token.get('change_24h'))
+                    snippets.append(f"{symbol}: {price_str} ({change_str})")
+                formatted_parts.append(
+                    "Trending tokens (24h): " + ", ".join(snippets)
+                )
+            focus = trending_info.get('focus')
+            if focus:
+                focus_name = focus.get('name') or focus.get('symbol') or 'token'
+                focus_price = _fmt_price(focus.get('price_usd'))
+                focus_change = _fmt_pct(focus.get('change_24h'))
+                focus_volume = _fmt_large(focus.get('volume_24h'))
+                formatted_parts.append(
+                    f"Focus token {focus_name}: {focus_price}, 24h change {focus_change}, volume {focus_volume}"
+                )
+
+        if 'trending_error' in tool_data:
+            formatted_parts.append(f"Trending token data unavailable: {tool_data['trending_error']}")
         
         if 'defillama_tvl' in tool_data:
             tvl_obj = tool_data['defillama_tvl']

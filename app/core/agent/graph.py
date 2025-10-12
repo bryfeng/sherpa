@@ -103,11 +103,26 @@ def build_agent_process_graph(agent: "Agent"):
             wallet_address = agent._extract_wallet_address(state['request'])  # pylint: disable=protected-access
             if wallet_address:
                 tool_data['_address'] = wallet_address
+        portfolio_tokens = None
+        portfolio_entry = tool_data.get('portfolio') if isinstance(tool_data, dict) else None
+        if isinstance(portfolio_entry, dict):
+            data = portfolio_entry.get('data')
+            if isinstance(data, dict):
+                portfolio_tokens = data.get('tokens')
+        if portfolio_tokens is None and agent.context_manager:
+            try:
+                conversation = agent.context_manager._conversations.get(state['conversation_id'])  # type: ignore[attr-defined]
+                if conversation and getattr(conversation, 'portfolio_context', None):
+                    portfolio_tokens = conversation.portfolio_context.get('tokens')  # type: ignore[call-arg]
+            except Exception:
+                portfolio_tokens = None
+
         swap_quote = await agent.swap_manager.maybe_handle(
             state['request'],
             state['conversation_id'],
             wallet_address=wallet_address,
             default_chain=getattr(state['request'], 'chain', None),
+            portfolio_tokens=portfolio_tokens,
         )
         if swap_quote:
             tool_data['swap_quote'] = swap_quote

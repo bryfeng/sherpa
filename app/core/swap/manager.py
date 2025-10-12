@@ -5,12 +5,13 @@ from __future__ import annotations
 import copy
 import logging
 import re
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, DivisionByZero
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 from ...providers.relay import RelayProvider
+from ...providers.coingecko import CoingeckoProvider
 from ...types.requests import ChatRequest
 from ..bridge.constants import (
     CHAIN_ALIAS_TO_ID,
@@ -32,9 +33,15 @@ from .models import SwapResult, SwapState
 class SwapManager:
     """Encapsulates swap intent parsing, quoting, and response shaping."""
 
-    def __init__(self, *, logger: Optional[logging.Logger] = None) -> None:
+    def __init__(
+        self,
+        *,
+        logger: Optional[logging.Logger] = None,
+        price_provider: Optional[CoingeckoProvider] = None,
+    ) -> None:
         self._logger = logger or logging.getLogger(__name__)
         self._pending: Dict[str, SwapState] = {}
+        self._price_provider = price_provider or CoingeckoProvider()
 
     async def maybe_handle(
         self,
@@ -43,6 +50,7 @@ class SwapManager:
         *,
         wallet_address: Optional[str],
         default_chain: Optional[str],
+        portfolio_tokens: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[Dict[str, Any]]:
         if not request.messages:
             return None
@@ -63,6 +71,16 @@ class SwapManager:
             return None
 
         context = dict(state.context) if state else {}
+
+        # Merge portfolio token metadata from current context and latest tool data
+        portfolio_tokens_index = self._build_portfolio_token_index(context.get('portfolio_tokens'))
+        fresh_portfolio_tokens = self._build_portfolio_token_index(portfolio_tokens)
+        if fresh_portfolio_tokens:
+            portfolio_tokens_index.update(fresh_portfolio_tokens)
+        if portfolio_tokens_index:
+            context['portfolio_tokens'] = portfolio_tokens_index
+
+        portfolio_alias_map = self._build_portfolio_alias_map(portfolio_tokens_index) if portfolio_tokens_index else {}
 
         wallet = wallet_address or context.get('wallet_address')
 
@@ -131,31 +149,45 @@ class SwapManager:
         token_out_symbol = context.get('token_out_symbol')
         amount_decimal = self._to_decimal(context.get('input_amount')) if context.get('input_amount') else None
 
-        parsed_amount, parsed_token_in, parsed_token_out = self._parse_swap_request(normalized_message)
+        parsed_amount, parsed_token_in, parsed_token_out, amount_currency = self._parse_swap_request(
+            normalized_message,
+            portfolio_alias_map,
+        )
+        usd_amount: Optional[Decimal] = None
 
         if parsed_token_in:
             token_in_symbol = parsed_token_in
         if parsed_token_out:
             token_out_symbol = parsed_token_out
         if parsed_amount is not None:
-            amount_decimal = parsed_amount
+            if amount_currency == 'USD':
+                usd_amount = parsed_amount
+            else:
+                amount_decimal = parsed_amount
 
-        if ('$' in normalized_message) or ('usd' in normalized_message and parsed_amount is None):
-            return finalize_result(
-                'needs_amount',
-                message='USD-denominated swap amounts are not supported yet. Please specify the input token amount, e.g., “swap 0.5 ETH to USDC”.',
-                context_updates={'wallet_address': wallet, 'chain_id': chain_id},
-            )
-
-        token_in_meta = self._resolve_token(chain_id, token_in_symbol) if token_in_symbol else None
-        token_out_meta = self._resolve_token(chain_id, token_out_symbol) if token_out_symbol else None
+        token_in_meta = self._resolve_token(
+            chain_id,
+            token_in_symbol,
+            portfolio_tokens_index,
+            portfolio_alias_map,
+        ) if token_in_symbol else None
+        token_out_meta = self._resolve_token(
+            chain_id,
+            token_out_symbol,
+            portfolio_tokens_index,
+            portfolio_alias_map,
+        ) if token_out_symbol else None
 
         if token_in_meta is None or token_out_meta is None:
-            supported = self._supported_tokens_string(chain_id)
+            supported = self._supported_tokens_string(chain_id, portfolio_tokens_index)
             return finalize_result(
                 'needs_token',
                 message=f'I need the tokens for this swap. Supported examples on {self._chain_name(chain_id)}: {supported}. Try “swap 0.25 ETH to USDC”.',
-                context_updates={'wallet_address': wallet, 'chain_id': chain_id},
+                context_updates={
+                    'wallet_address': wallet,
+                    'chain_id': chain_id,
+                    'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
+                },
             )
 
         if token_in_meta['symbol'] == token_out_meta['symbol']:
@@ -164,6 +196,36 @@ class SwapManager:
                 message='The input and output tokens are the same. Please choose two different assets for the swap.',
                 context_updates={'wallet_address': wallet, 'chain_id': chain_id},
             )
+
+        if amount_decimal is None and usd_amount is not None:
+            if usd_amount <= Decimal('0'):
+                return finalize_result(
+                    'needs_amount',
+                    message='The USD amount looks invalid. Please share a positive dollar amount or specify the token amount directly.',
+                    context_updates={
+                        'wallet_address': wallet,
+                        'chain_id': chain_id,
+                        'token_in_symbol': token_in_meta['symbol'],
+                        'token_out_symbol': token_out_meta['symbol'],
+                    },
+                )
+            converted_amount = await self._convert_usd_to_input_amount(usd_amount, token_in_meta)
+            if converted_amount is None:
+                pretty_usd = self._decimal_to_str(usd_amount)
+                return finalize_result(
+                    'needs_amount',
+                    message=(
+                        f"I couldn't convert ${pretty_usd} to {token_in_meta['symbol']} right now. "
+                        f"Please specify the {token_in_meta['symbol']} amount or try again shortly."
+                    ),
+                    context_updates={
+                        'wallet_address': wallet,
+                        'chain_id': chain_id,
+                        'token_in_symbol': token_in_meta['symbol'],
+                        'token_out_symbol': token_out_meta['symbol'],
+                    },
+                )
+            amount_decimal = converted_amount
 
         if amount_decimal is None:
             return finalize_result(
@@ -174,6 +236,7 @@ class SwapManager:
                     'chain_id': chain_id,
                     'token_in_symbol': token_in_meta['symbol'],
                     'token_out_symbol': token_out_meta['symbol'],
+                    'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
                 },
             )
 
@@ -187,6 +250,7 @@ class SwapManager:
                     'chain_id': chain_id,
                     'token_in_symbol': token_in_meta['symbol'],
                     'token_out_symbol': token_out_meta['symbol'],
+                    'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
                 },
             )
 
@@ -200,6 +264,7 @@ class SwapManager:
                     'chain_id': chain_id,
                     'token_in_symbol': token_in_meta['symbol'],
                     'token_out_symbol': token_out_meta['symbol'],
+                    'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
                 },
             )
 
@@ -237,6 +302,8 @@ class SwapManager:
                 'input_base_units': amount_base_units_str,
             },
         }
+        if usd_amount is not None:
+            panel_payload['amounts']['input_usd'] = self._decimal_to_str(usd_amount)
 
         context_updates = {
             'wallet_address': wallet,
@@ -246,7 +313,10 @@ class SwapManager:
             'input_amount': str(amount_decimal),
             'token_in_address': token_in_meta['address'],
             'token_out_address': token_out_meta['address'],
+            'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
         }
+        if usd_amount is not None:
+            context_updates['input_amount_usd'] = str(usd_amount)
 
         pending_entry = SwapState(
             context={k: v for k, v in context_updates.items() if v is not None},
@@ -393,6 +463,11 @@ class SwapManager:
             'output': output_usd,
             'gas': fees.get('gas', {}).get('amountUsd') if isinstance(fees.get('gas'), dict) else (float(total_fee_usd) if total_fee_usd is not None else None),
         }
+        if usd_amount is not None:
+            try:
+                panel_payload['usd_estimates']['input_requested'] = float(usd_amount)
+            except (TypeError, ValueError):
+                panel_payload['usd_estimates']['input_requested'] = None
         panel_payload['instructions'] = [
             'Review the Relay swap quote including output estimate and fees.',
             f'Confirm the {token_in_meta["symbol"]} → {token_out_meta["symbol"]} transaction in your connected wallet.',
@@ -407,6 +482,11 @@ class SwapManager:
         summary_lines = [
             f"✅ Swap {self._decimal_to_str(routed_from_amount or amount_decimal)} {input_symbol} → {output_symbol} on {self._chain_name(chain_id)}"
         ]
+        if usd_amount is not None:
+            try:
+                summary_lines.insert(0, f"🎯 Target ≈ ${float(usd_amount):.2f} of {input_symbol}")
+            except (TypeError, ValueError):
+                summary_lines.insert(0, f"🎯 Target amount ≈ ${self._decimal_to_str(usd_amount)} of {input_symbol}")
         if routed_to_amount is not None:
             arrival_line = f"Estimated output: {self._decimal_to_str(routed_to_amount)} {output_symbol}"
             if output_usd is not None:
@@ -526,48 +606,70 @@ class SwapManager:
             return f'Chain {chain_id}'
         return str(meta.get('name', f'Chain {chain_id}'))
 
-    def _resolve_token(self, chain_id: int, token_hint: Optional[str]) -> Optional[Dict[str, Any]]:
-        if not token_hint:
-            return None
-        alias_map = TOKEN_ALIAS_MAP.get(chain_id, {})
-        symbol = alias_map.get(token_hint.lower())
-        if not symbol:
-            global_symbol = GLOBAL_TOKEN_ALIASES.get(token_hint.lower())
-            if global_symbol and global_symbol in TOKEN_REGISTRY.get(chain_id, {}):
-                symbol = global_symbol
-        if not symbol:
-            return None
-        token_meta = TOKEN_REGISTRY[chain_id][symbol]
-        return {
-            'symbol': token_meta['symbol'],
-            'address': token_meta['address'],
-            'decimals': token_meta['decimals'],
-            'is_native': token_meta.get('is_native', False),
-        }
+    def _supported_tokens_string(
+        self,
+        chain_id: int,
+        extra_tokens: Optional[Dict[str, Dict[str, Any]]] = None,
+    ) -> str:
+        tokens = {symbol.upper(): meta for symbol, meta in TOKEN_REGISTRY.get(chain_id, {}).items()}
+        if extra_tokens:
+            for symbol, meta in extra_tokens.items():
+                tokens.setdefault(symbol.upper(), meta)
+        return ', '.join(sorted(tokens.keys())) if tokens else 'ETH'
 
-    def _supported_tokens_string(self, chain_id: int) -> str:
-        tokens = TOKEN_REGISTRY.get(chain_id, {})
-        return ', '.join(tokens.keys()) if tokens else 'ETH'
-
-    def _parse_swap_request(self, message: str) -> Tuple[Optional[Decimal], Optional[str], Optional[str]]:
+    def _parse_swap_request(
+        self,
+        message: str,
+        extra_aliases: Optional[Dict[str, str]] = None,
+    ) -> Tuple[Optional[Decimal], Optional[str], Optional[str], Optional[str]]:
         amount: Optional[Decimal] = None
         token_in: Optional[str] = None
         token_out: Optional[str] = None
+        amount_currency: Optional[str] = None
 
-        amount_match = re.search(r'(?:swap|trade|convert|exchange)\s+(?P<amount>\d+(?:\.\d+)?)', message)
-        if amount_match:
-            amount = self._to_decimal(amount_match.group('amount'))
+        qualifier = r'(?:about|around|roughly|approximately)\s+'
+        usd_prefix_pattern = re.search(
+            rf'(?:swap|trade|convert|exchange)\s+(?:{qualifier})?\$(?P<usd>\d+(?:\.\d+)?)',
+            message,
+        )
+        if usd_prefix_pattern:
+            amount = self._to_decimal(usd_prefix_pattern.group('usd'))
+            amount_currency = 'USD'
+        else:
+            usd_suffix_pattern = re.search(
+                rf'(?:swap|trade|convert|exchange)\s+(?:{qualifier})?(?P<usd>\d+(?:\.\d+)?)\s*(usd|dollars?)\b',
+                message,
+            )
+            if usd_suffix_pattern:
+                amount = self._to_decimal(usd_suffix_pattern.group('usd'))
+                amount_currency = 'USD'
 
-        pattern = re.search(r'(?:swap|trade|convert|exchange)\s+(?:\d+(?:\.\d+)?\s*)?(?P<from>[a-zA-Z0-9]{2,10})\s+to\s+(?P<to>[a-zA-Z0-9]{2,10})', message)
+        if amount is None:
+            amount_match = re.search(r'(?:swap|trade|convert|exchange)\s+(?P<amount>\d+(?:\.\d+)?)', message)
+            if amount_match:
+                amount = self._to_decimal(amount_match.group('amount'))
+                if amount is not None:
+                    amount_currency = 'TOKEN'
+
+        alias_map = dict(GLOBAL_TOKEN_ALIASES)
+        if extra_aliases:
+            alias_map.update({k.lower(): v for k, v in extra_aliases.items()})
+
+        pattern = re.search(
+            r'(?:swap|trade|convert|exchange)\s+(?:\$?\d+(?:\.\d+)?\s*(?:usd|dollars?)?\s*)?(?:of\s+)?(?P<from>[a-zA-Z0-9$]{2,15})\s+to\s+(?P<to>[a-zA-Z0-9$]{2,15})',
+            message,
+        )
         if pattern:
-            token_in = pattern.group('from').upper()
-            token_out = pattern.group('to').upper()
+            raw_in = pattern.group('from').lstrip('$')
+            raw_out = pattern.group('to').lstrip('$')
+            token_in = alias_map.get(raw_in.lower()) or raw_in.upper()
+            token_out = alias_map.get(raw_out.lower()) or raw_out.upper()
         else:
             tokens_ordered: List[str] = []
-            for candidate in re.findall(r'[a-zA-Z]{2,10}', message):
-                lower = candidate.lower()
-                if lower in GLOBAL_TOKEN_ALIASES:
-                    tokens_ordered.append(GLOBAL_TOKEN_ALIASES[lower])
+            for candidate in re.findall(r'[a-zA-Z0-9$]{2,20}', message):
+                cleaned = candidate.lstrip('$').lower()
+                if cleaned in alias_map:
+                    tokens_ordered.append(alias_map[cleaned])
             if len(tokens_ordered) >= 2:
                 token_in, token_out = tokens_ordered[0], tokens_ordered[1]
 
@@ -575,8 +677,52 @@ class SwapManager:
             amount_match_generic = re.search(r'\b(\d+(?:\.\d+)?)\b', message)
             if amount_match_generic:
                 amount = self._to_decimal(amount_match_generic.group(1))
+                if amount is not None and amount_currency is None:
+                    amount_currency = 'TOKEN'
 
-        return amount, token_in, token_out
+        return amount, token_in, token_out, amount_currency
+
+    def _resolve_token(
+        self,
+        chain_id: int,
+        token_hint: Optional[str],
+        extra_tokens: Optional[Dict[str, Dict[str, Any]]] = None,
+        extra_aliases: Optional[Dict[str, str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not token_hint:
+            return None
+        alias_map = TOKEN_ALIAS_MAP.get(chain_id, {})
+        hint_lower = token_hint.lower()
+        symbol = alias_map.get(hint_lower)
+        if not symbol and extra_aliases:
+            symbol = extra_aliases.get(hint_lower)
+        if not symbol:
+            global_symbol = GLOBAL_TOKEN_ALIASES.get(hint_lower)
+            if global_symbol:
+                symbol = global_symbol
+        if not symbol:
+            symbol = token_hint.upper()
+
+        if extra_tokens and symbol in extra_tokens:
+            token_meta = extra_tokens[symbol]
+            return {
+                'symbol': token_meta['symbol'],
+                'address': token_meta['address'],
+                'decimals': token_meta['decimals'],
+                'is_native': token_meta.get('is_native', False),
+                'name': token_meta.get('name'),
+            }
+
+        registry = TOKEN_REGISTRY.get(chain_id, {})
+        if symbol not in registry:
+            return None
+        token_meta = registry[symbol]
+        return {
+            'symbol': token_meta['symbol'],
+            'address': token_meta['address'],
+            'decimals': token_meta['decimals'],
+            'is_native': token_meta.get('is_native', False),
+        }
 
     def _sanitize_amount(self, value: Decimal) -> Optional[Decimal]:
         try:
@@ -650,6 +796,138 @@ class SwapManager:
                 continue
         return total if seen else None
 
+    async def _convert_usd_to_input_amount(
+        self,
+        usd_amount: Decimal,
+        token_meta: Dict[str, Any],
+    ) -> Optional[Decimal]:
+        try:
+            usd_value = Decimal(usd_amount)
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if usd_value <= 0:
+            return None
+
+        provider = self._price_provider
+        try:
+            ready = await provider.ready()
+        except Exception as exc:  # pragma: no cover - logging only
+            self._logger.warning('Price provider readiness check failed: %s', exc)
+            return None
+        if not ready:
+            self._logger.info('Price provider unavailable; cannot convert USD-denominated swap amount.')
+            return None
+
+        price_decimal: Optional[Decimal] = None
+
+        try:
+            if token_meta.get('is_native') or str(token_meta.get('address')).lower() == NATIVE_PLACEHOLDER.lower():
+                price_info = await provider.get_eth_price()
+                if isinstance(price_info, dict):
+                    price_val = price_info.get('price_usd')
+                    if price_val is not None:
+                        price_decimal = Decimal(str(price_val))
+            else:
+                raw_address_value = token_meta.get('address')
+                if not raw_address_value:
+                    return None
+                address_lower = str(raw_address_value).lower()
+                prices = await provider.get_token_prices([address_lower])
+                price_entry = prices.get(address_lower) or prices.get(str(raw_address_value))
+                if price_entry and price_entry.get('price_usd') is not None:
+                    price_decimal = Decimal(str(price_entry['price_usd']))
+        except Exception as exc:  # pragma: no cover - logging only
+            self._logger.warning('Failed fetching price for USD conversion: %s', exc)
+            return None
+
+        if price_decimal is None or price_decimal <= 0:
+            return None
+
+        try:
+            token_amount = usd_value / price_decimal
+        except (InvalidOperation, DivisionByZero, OverflowError):
+            return None
+
+        return self._sanitize_amount(token_amount)
+
+    def _build_portfolio_token_index(
+        self,
+        tokens_source: Optional[Any],
+    ) -> Dict[str, Dict[str, Any]]:
+        if not tokens_source:
+            return {}
+
+        if isinstance(tokens_source, dict):
+            sanitized: Dict[str, Dict[str, Any]] = {}
+            for key, value in tokens_source.items():
+                entry = self._sanitize_portfolio_token(key, value)
+                if entry:
+                    sanitized[entry['symbol']] = entry
+            return sanitized
+
+        result: Dict[str, Dict[str, Any]] = {}
+        if isinstance(tokens_source, list):
+            for raw in tokens_source:
+                entry = self._sanitize_portfolio_token(None, raw)
+                if entry:
+                    result[entry['symbol']] = entry
+        return result
+
+    def _sanitize_portfolio_token(
+        self,
+        key: Optional[str],
+        raw: Any,
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(raw, dict):
+            return None
+        symbol = str(raw.get('symbol') or key or '').strip().upper()
+        if not symbol:
+            return None
+
+        decimals_raw = raw.get('decimals')
+        try:
+            decimals = int(decimals_raw)
+        except (TypeError, ValueError):
+            return None
+
+        address_raw = raw.get('address')
+        address = str(address_raw).lower() if isinstance(address_raw, str) else None
+        is_native = not address or address == NATIVE_PLACEHOLDER.lower()
+        normalized_address = NATIVE_PLACEHOLDER if is_native else address
+
+        name = str(raw.get('name') or symbol)
+
+        entry: Dict[str, Any] = {
+            'symbol': symbol,
+            'name': name,
+            'address': normalized_address,
+            'decimals': decimals,
+            'is_native': is_native,
+        }
+
+        return entry
+
+    def _build_portfolio_alias_map(
+        self,
+        portfolio_tokens: Dict[str, Dict[str, Any]],
+    ) -> Dict[str, str]:
+        alias_map: Dict[str, str] = {}
+        for symbol, meta in portfolio_tokens.items():
+            lower_symbol = symbol.lower()
+            alias_map[lower_symbol] = symbol
+            alias_map[symbol.lstrip('$').lower()] = symbol
+
+            name = meta.get('name')
+            if isinstance(name, str) and name:
+                alias_map[name.lower()] = symbol
+                alias_map[name.replace(' ', '').lower()] = symbol
+
+            address = meta.get('address')
+            if isinstance(address, str) and address and address != NATIVE_PLACEHOLDER:
+                alias_map[address.lower()] = symbol
+
+        return alias_map
+
     def _extract_steps(
         self,
         steps_raw: List[Dict[str, Any]],
@@ -707,4 +985,3 @@ class SwapManager:
             normalized_steps.append(step_entry)
 
         return normalized_steps, transactions, approvals, signatures
-
