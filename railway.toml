@@ -12,4 +12,4 @@ cmds = [
 
 [start]
 # adjust module path if app is not in main.py
-cmd = "uvicorn agentic_wallet_py.main:app --host 0.0.0.0 --port $PORT"
+cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1"
