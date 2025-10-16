@@ -9,11 +9,15 @@ router = APIRouter(prefix="/swap")
 
 
 class SwapQuoteRequest(BaseModel):
-    token_in: str = Field(description="Symbol or address of input token (MVP uses symbols)")
-    token_out: str = Field(description="Symbol or address of output token (MVP uses symbols)")
+    token_in: str = Field(description="Symbol or address of input token")
+    token_out: str = Field(description="Symbol or address of output token")
     amount_in: float = Field(gt=0, description="Amount of input token")
     chain: Optional[str] = Field(default="ethereum", description="Blockchain network context")
     slippage_bps: Optional[int] = Field(default=50, ge=0, le=5000, description="Allowed slippage in basis points")
+    wallet_address: Optional[str] = Field(
+        default=None,
+        description="Wallet address used for Relay quoting (required for executable quotes)",
+    )
 
 
 class SwapQuoteResponse(BaseModel):
@@ -39,6 +43,8 @@ async def post_swap_quote(req: SwapQuoteRequest) -> SwapQuoteResponse:
             token_out=req.token_out,
             amount_in=req.amount_in,
             slippage_bps=req.slippage_bps or 50,
+            chain=req.chain,
+            wallet_address=req.wallet_address,
         )
         return SwapQuoteResponse(
             success=bool(quote.get("success", False)),
@@ -54,6 +60,7 @@ async def post_swap_quote(req: SwapQuoteRequest) -> SwapQuoteResponse:
             sources=list(quote.get("sources", [])),
             warnings=list(quote.get("warnings", [])),
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to compute quote: {str(e)}")
-
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to compute quote: {exc}")

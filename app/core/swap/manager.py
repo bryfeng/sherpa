@@ -149,6 +149,8 @@ class SwapManager:
         token_out_symbol = context.get('token_out_symbol')
         amount_decimal = self._to_decimal(context.get('input_amount')) if context.get('input_amount') else None
 
+        percent_fraction: Optional[Decimal] = None
+
         parsed_amount, parsed_token_in, parsed_token_out, amount_currency = self._parse_swap_request(
             normalized_message,
             portfolio_alias_map,
@@ -162,6 +164,8 @@ class SwapManager:
         if parsed_amount is not None:
             if amount_currency == 'USD':
                 usd_amount = parsed_amount
+            elif amount_currency == 'PERCENT':
+                percent_fraction = parsed_amount
             else:
                 amount_decimal = parsed_amount
 
@@ -196,6 +200,51 @@ class SwapManager:
                 message='The input and output tokens are the same. Please choose two different assets for the swap.',
                 context_updates={'wallet_address': wallet, 'chain_id': chain_id},
             )
+
+        if amount_decimal is None and percent_fraction is not None:
+            portfolio_entry = None
+            if portfolio_tokens_index:
+                portfolio_entry = portfolio_tokens_index.get(token_in_meta['symbol'])
+            balance_decimal = None
+            if portfolio_entry:
+                balance_decimal = portfolio_entry.get('balance_decimal')
+                if balance_decimal is None:
+                    balance_decimal = self._to_decimal(portfolio_entry.get('balance_formatted'))
+            if balance_decimal is None or balance_decimal <= Decimal('0'):
+                pretty_percent = self._decimal_to_str(percent_fraction * Decimal('100'))
+                return finalize_result(
+                    'needs_amount',
+                    message=(
+                        f"I'm not sure how much {token_in_meta['symbol']} you own to calculate {pretty_percent}% for this swap. "
+                        f"Please share the exact {token_in_meta['symbol']} amount or refresh your portfolio data."
+                    ),
+                    context_updates={
+                        'wallet_address': wallet,
+                        'chain_id': chain_id,
+                        'token_in_symbol': token_in_meta['symbol'],
+                        'token_out_symbol': token_out_meta['symbol'],
+                        'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
+                    },
+                )
+
+            computed_amount = balance_decimal * percent_fraction
+            amount_decimal = self._sanitize_amount(computed_amount)
+            if amount_decimal is None or amount_decimal <= Decimal('0'):
+                pretty_percent = self._decimal_to_str(percent_fraction * Decimal('100'))
+                return finalize_result(
+                    'needs_amount',
+                    message=(
+                        f"{pretty_percent}% of your {token_in_meta['symbol']} balance is too small to swap. "
+                        f"Please specify a larger amount."
+                    ),
+                    context_updates={
+                        'wallet_address': wallet,
+                        'chain_id': chain_id,
+                        'token_in_symbol': token_in_meta['symbol'],
+                        'token_out_symbol': token_out_meta['symbol'],
+                        'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
+                    },
+                )
 
         if amount_decimal is None and usd_amount is not None:
             if usd_amount <= Decimal('0'):
@@ -302,6 +351,8 @@ class SwapManager:
                 'input_base_units': amount_base_units_str,
             },
         }
+        if percent_fraction is not None:
+            panel_payload['amounts']['input_share_percent'] = self._decimal_to_str(percent_fraction * Decimal('100'))
         if usd_amount is not None:
             panel_payload['amounts']['input_usd'] = self._decimal_to_str(usd_amount)
 
@@ -317,6 +368,8 @@ class SwapManager:
         }
         if usd_amount is not None:
             context_updates['input_amount_usd'] = str(usd_amount)
+        if percent_fraction is not None:
+            context_updates['input_amount_percent'] = self._decimal_to_str(percent_fraction * Decimal('100'))
 
         pending_entry = SwapState(
             context={k: v for k, v in context_updates.items() if v is not None},
@@ -645,6 +698,21 @@ class SwapManager:
                 amount_currency = 'USD'
 
         if amount is None:
+            percent_pattern = re.search(
+                r'(?:swap|trade|convert|exchange)[^\d%]*?(?P<percent>\d+(?:\.\d+)?)\s*(?:percent|pct|%)',
+                message,
+            )
+            if percent_pattern:
+                percent_value = self._to_decimal(percent_pattern.group('percent'))
+                if percent_value is not None:
+                    try:
+                        amount = (percent_value / Decimal('100')).quantize(Decimal('1.000000000000000000'), rounding=ROUND_DOWN)
+                        amount_currency = 'PERCENT'
+                    except (InvalidOperation, DivisionByZero):
+                        amount = None
+                        amount_currency = None
+
+        if amount is None:
             amount_match = re.search(r'(?:swap|trade|convert|exchange)\s+(?P<amount>\d+(?:\.\d+)?)', message)
             if amount_match:
                 amount = self._to_decimal(amount_match.group('amount'))
@@ -904,6 +972,32 @@ class SwapManager:
             'decimals': decimals,
             'is_native': is_native,
         }
+
+        balance_decimal: Optional[Decimal] = None
+        for candidate_key in ('balance_decimal', 'balance', 'balance_formatted', 'quantity'):
+            candidate_value = raw.get(candidate_key)
+            if candidate_value is None:
+                continue
+            balance_decimal = self._to_decimal(candidate_value)
+            if balance_decimal is not None:
+                break
+        if balance_decimal is not None:
+            entry['balance_decimal'] = balance_decimal
+            entry['balance_formatted'] = str(balance_decimal)
+
+        balance_wei_raw = raw.get('balance_wei')
+        if balance_wei_raw is not None:
+            try:
+                entry['balance_wei'] = int(str(balance_wei_raw), 10)
+            except (TypeError, ValueError):
+                pass
+
+        value_usd_raw = raw.get('value_usd')
+        if value_usd_raw is not None:
+            try:
+                entry['value_usd'] = Decimal(str(value_usd_raw))
+            except (InvalidOperation, TypeError, ValueError):
+                pass
 
         return entry
 

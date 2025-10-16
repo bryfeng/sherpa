@@ -71,6 +71,7 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="anthropic", description="Default LLM provider")
     anthropic_api_key: str = Field(default="", description="Anthropic API key")
     openai_api_key: str = Field(default="", description="OpenAI API key")
+    z_api_key: str = Field(default="", description="Z AI API key")
     
     # LLM Configuration
     llm_model: str = Field(default="claude-3-sonnet-20240229", description="Default LLM model")
@@ -99,12 +100,18 @@ class Settings(BaseSettings):
         return bool(self.openai_api_key)
     
     @property
+    def has_zai_key(self) -> bool:
+        return bool(self.z_api_key)
+    
+    @property
     def has_llm_key(self) -> bool:
         """Check if we have an API key for the configured LLM provider"""
         if self.llm_provider.lower() in ["anthropic", "claude"]:
             return self.has_anthropic_key
         elif self.llm_provider.lower() in ["openai", "gpt"]:
             return self.has_openai_key
+        elif self.llm_provider.lower() in ["zai", "z"]:
+            return self.has_zai_key
         return False
 
 

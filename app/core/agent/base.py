@@ -10,7 +10,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from statistics import mean, pstdev
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence, Union
 import uuid
 
 import httpx
@@ -306,50 +306,97 @@ class Agent:
             protocol = 'uniswap'
         return {'protocol': protocol, 'window': window}
 
+    def _build_llm_messages(
+        self,
+        base_messages: List[LLMMessage],
+        tool_data: Dict[str, Any],
+        conversation_id: str,
+    ) -> List[LLMMessage]:
+        """Compose the final message list passed to the LLM."""
+
+        messages: List[LLMMessage] = [
+            LLMMessage(role=msg.role, content=msg.content)
+            for msg in base_messages
+        ]
+
+        current_style = self._conversation_styles.get(
+            conversation_id,
+            self.style_manager.get_current_style(),
+        )
+        style_modifier = self.style_manager.get_style_modifier_prompt(current_style)
+        if style_modifier:
+            messages.append(
+                LLMMessage(
+                    role="system",
+                    content=f"Response style guidance: {style_modifier}",
+                )
+            )
+
+        if tool_data:
+            tool_context = self._format_tool_data_for_llm(tool_data)
+            messages.append(
+                LLMMessage(
+                    role="system",
+                    content=f"Available data: {tool_context}",
+                )
+            )
+            if 'defillama_tvl' in tool_data:
+                messages.append(
+                    LLMMessage(
+                        role="system",
+                        content=(
+                            "With the provided TVL time series, write a concise 7-day analysis with 2–4 bullets: "
+                            "start vs end, absolute and percent change, min/max with dates, and overall trend. "
+                            "Avoid disclaimers about missing charts; assume the user sees the chart panel."
+                        ),
+                    )
+                )
+
+        return messages
+
     async def _generate_llm_response(
         self,
         messages: List[LLMMessage],
         tool_data: Dict[str, Any],
-        persona_name: str,
-        conversation_id: str
+        persona_name: str,  # noqa: ARG002 - kept for parity with streaming signature
+        conversation_id: str,
     ) -> LLMResponse:
-        """Generate response from LLM with tool data context and style modifiers"""
-        
-        # Add style modifier to system context
-        current_style = self._conversation_styles.get(conversation_id, self.style_manager.get_current_style())
-        style_modifier = self.style_manager.get_style_modifier_prompt(current_style)
-        
-        if style_modifier:
-            messages.append(LLMMessage(
-                role="system",
-                content=f"Response style guidance: {style_modifier}"
-            ))
-        
-        # Add tool data to context if available
-        if tool_data:
-            tool_context = self._format_tool_data_for_llm(tool_data)
-            messages.append(LLMMessage(
-                role="system",
-                content=f"Available data: {tool_context}"
-            ))
-            if 'defillama_tvl' in tool_data:
-                messages.append(LLMMessage(
-                    role="system",
-                    content=(
-                        "With the provided TVL time series, write a concise 7-day analysis with 2–4 bullets: "
-                        "start vs end, absolute and percent change, min/max with dates, and overall trend. "
-                        "Avoid disclaimers about missing charts; assume the user sees the chart panel."
-                    )
-                ))
-            
-        # Generate response from LLM
+        """Generate response from LLM with tool data context and style modifiers."""
+
+        llm_messages = self._build_llm_messages(messages, tool_data, conversation_id)
+
         response = await self.llm_provider.generate_response(
-            messages=messages,
+            messages=llm_messages,
             max_tokens=4000,
-            temperature=0.7
+            temperature=0.7,
         )
-        
+
         return response
+
+    async def _stream_llm_response(
+        self,
+        messages: List[LLMMessage],
+        tool_data: Dict[str, Any],
+        conversation_id: str,
+    ) -> AsyncGenerator[str, None]:
+        """Stream response tokens from the LLM provider."""
+
+        llm_messages = self._build_llm_messages(messages, tool_data, conversation_id)
+        try:
+            async for chunk in self.llm_provider.generate_streaming_response(  # type: ignore[attr-defined]
+                messages=llm_messages,
+                max_tokens=4000,
+                temperature=0.7,
+            ):
+                yield chunk
+        except AttributeError:
+            # Provider does not support streaming; fall back to single response
+            response = await self.llm_provider.generate_response(
+                messages=llm_messages,
+                max_tokens=4000,
+                temperature=0.7,
+            )
+            yield response.content
 
     async def _format_response(
         self,
