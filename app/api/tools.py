@@ -1,5 +1,8 @@
-from fastapi import APIRouter, HTTPException, Query
+import logging
+from time import perf_counter
 from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
 from ..types import PortfolioResponse
 from ..tools.portfolio import get_portfolio
 from ..tools.defillama import get_tvl_series, get_tvl_current
@@ -8,6 +11,7 @@ from ..providers.coingecko import CoingeckoProvider
 from ..services.trending import get_trending_tokens
 
 router = APIRouter(prefix="/tools")
+_logger = logging.getLogger(__name__)
 
 
 @router.get("/portfolio")
@@ -101,7 +105,21 @@ async def get_trending_prices(
     """Return trending tokens constrained to EVM-compatible contracts."""
 
     try:
-        tokens = await get_trending_tokens(limit=limit)
-        return {"success": True, "tokens": list(tokens)}
+        started = perf_counter()
+        tokens = list(await get_trending_tokens(limit=limit))
+        elapsed_ms = (perf_counter() - started) * 1000
+        _logger.info(
+            "trending tokens fetched", extra={
+                "event": "trending_tokens",
+                "limit": limit,
+                "count": len(tokens),
+                "duration_ms": round(elapsed_ms, 2),
+            }
+        )
+        return {"success": True, "tokens": tokens}
     except Exception as exc:
+        _logger.warning(
+            "trending tokens fetch failed",
+            extra={"event": "trending_tokens_error", "limit": limit, "error": str(exc)},
+        )
         raise HTTPException(status_code=500, detail=f"Failed to fetch trending prices: {exc}")
