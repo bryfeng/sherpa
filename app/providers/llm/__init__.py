@@ -35,11 +35,8 @@ class LLMProviderFactory:
 
         provider_class = PROVIDER_REGISTRY[provider_name]
 
-        if model is None:
-            if provider_name in ["anthropic", "claude"]:
-                model = "claude-sonnet-4-20250514"
-            elif provider_name in ["zai", "z"]:
-                model = "glm-4.6"
+        if not model:
+            raise ValueError(f"No model provided for provider '{provider_name}'.")
 
         try:
             return provider_class(api_key=api_key, model=model, **kwargs)
@@ -55,19 +52,21 @@ def get_available_providers() -> Dict[str, Dict[str, str]]:
 
     providers_info: Dict[str, Dict[str, str]] = {}
 
+    from ...config import settings  # Local import to avoid circular dependency
+
     for provider_name in PROVIDER_REGISTRY:
         try:
             if provider_name in ["anthropic", "claude"]:
                 import anthropic  # type: ignore  # noqa: F401
                 providers_info[provider_name] = {
                     "status": "available",
-                    "default_model": "claude-sonnet-4-20250514",
+                    "default_model": settings.resolve_default_model(provider_name),
                     "description": "Anthropic Claude API",
                 }
             elif provider_name in ["zai", "z"]:
                 providers_info[provider_name] = {
                     "status": "available",
-                    "default_model": "glm-4.6",
+                    "default_model": settings.resolve_default_model(provider_name),
                     "description": "Z AI Chat Completions API",
                 }
         except ImportError:
@@ -80,7 +79,7 @@ def get_available_providers() -> Dict[str, Dict[str, str]]:
             else:
                 providers_info[provider_name] = {
                     "status": "available",
-                    "default_model": "glm-4.6",
+                    "default_model": settings.resolve_default_model(provider_name),
                     "description": "Z AI Chat Completions API",
                 }
 
@@ -111,6 +110,9 @@ def get_llm_provider(
     resolved_model = model or settings.llm_model
     if isinstance(resolved_model, str):
         resolved_model = resolved_model.strip() or None
+
+    if resolved_model is None:
+        resolved_model = settings.resolve_default_model(resolved_provider)
 
     return LLMProviderFactory.create_provider(
         provider_name=resolved_provider,

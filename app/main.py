@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api import health, tools, chat, swap, conversations, entitlement
+from .api import health, tools, chat, swap, conversations, entitlement, perps
 from .api import relay as relay_api
 from .config import settings
 
@@ -30,6 +30,7 @@ app.include_router(swap.router, tags=["Swap"])
 app.include_router(relay_api.router, tags=["Relay"])
 app.include_router(conversations.router, tags=["Conversations"])
 app.include_router(entitlement.router, tags=["Entitlement"])
+app.include_router(perps.router, tags=["Perps"])
 
 
 @app.get("/")

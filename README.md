@@ -30,6 +30,13 @@ This system has been completely transformed from basic hardcoded responses to a 
 - **Actionable Swaps**: Trending payloads include contract addresses + chain IDs so the chat agent can prepare Relay swap quotes instantly
 - **Future Expansion Ready**: Non-EVM chains (e.g., Solana) are isolated for phased support without disturbing the current flow
 
+### 🛡️ **Perps Copilot with Risk Guardrails**
+- **Pure Simulation**: New `/perps/simulate` endpoint returns read-only perpetuals analytics with no live trading
+- **Risk Analytics**: Includes funding impact, liquidation estimation, VaR/ES(95%), and Kelly-capped sizing suggestions
+- **Policy Enforcement**: Conversation-scoped limits (max leverage, notional, daily loss, allowlisted markets) surface clear violation messages
+- **Explainability Ready**: Responses include reason strings, risk bucket scores, and CTA-friendly take-profit/stop-loss suggestions for the chat UI
+- **Mockable Providers**: GMX v2, Perennial, and CEX proxy adapters default to deterministic data via `FEATURE_FLAG_FAKE_PERPS`
+
 ### 🔧 **Developer-Friendly**
 - **Multi-Provider LLM Support**: Currently Anthropic Claude, designed for OpenAI/others
 - **FastAPI Backend**: REST API with automatic OpenAPI documentation

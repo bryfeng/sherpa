@@ -1,5 +1,7 @@
 from decimal import Decimal
 from pathlib import Path
+from typing import Dict
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -35,6 +37,9 @@ class Settings(BaseSettings):
     # Provider Toggles
     enable_alchemy: bool = Field(default=True, description="Enable Alchemy provider")
     enable_coingecko: bool = Field(default=True, description="Enable Coingecko provider")
+    enable_gmx: bool = Field(default=True, description="Enable GMX v2 perps provider")
+    enable_perennial: bool = Field(default=True, description="Enable Perennial perps provider")
+    enable_cex_proxy: bool = Field(default=False, description="Enable centralized exchange proxy provider")
 
     # Pro entitlement (token gating)
     pro_token_address: str = Field(
@@ -67,6 +72,9 @@ class Settings(BaseSettings):
         description="Override the default Relay API base URL",
     )
 
+    # Feature Flags
+    feature_flag_fake_perps: bool = Field(default=True, description="Use deterministic perps data mocks")
+
     # LLM Provider Settings
     llm_provider: str = Field(default="anthropic", description="Default LLM provider")
     anthropic_api_key: str = Field(default="", description="Anthropic API key")
@@ -74,7 +82,7 @@ class Settings(BaseSettings):
     z_api_key: str = Field(default="", description="Z AI API key")
     
     # LLM Configuration
-    llm_model: str = Field(default="claude-3-sonnet-20240229", description="Default LLM model")
+    llm_model: str = Field(default="claude-3-5-sonnet-20241022", description="Default LLM model")
     max_tokens: int = Field(default=4000, description="Maximum tokens for LLM response")
     temperature: float = Field(default=0.7, description="LLM temperature setting")
     context_window_size: int = Field(default=8000, description="Context window size for conversations")
@@ -82,6 +90,23 @@ class Settings(BaseSettings):
     # LLM Features
     enable_streaming: bool = Field(default=False, description="Enable streaming responses")
     enable_llm_health_check: bool = Field(default=True, description="Enable LLM provider health checks")
+
+    # Risk & Policy Defaults
+    default_max_leverage: float = Field(default=3.0, description="Default maximum leverage for perps simulations")
+    default_max_daily_loss_usd: float = Field(default=300.0, description="Default maximum daily loss budget in USD")
+    default_max_position_notional_usd: float = Field(default=5000.0, description="Default maximum per-position notional in USD")
+    default_per_trade_risk_cap_usd: float = Field(default=150.0, description="Default maximum per-trade risk in USD")
+    default_kelly_cap: float = Field(default=0.5, description="Maximum Kelly fraction allowed for sizing suggestions")
+    default_var_conf: float = Field(default=0.95, description="Default confidence level for VaR/ES calculations")
+    default_provider_models: Dict[str, str] = Field(
+        default_factory=lambda: {
+            "anthropic": "claude-3-5-sonnet-20241022",
+            "claude": "claude-3-5-sonnet-20241022",
+            "zai": "glm-4.6",
+            "z": "glm-4.6",
+        },
+        description="Provider-specific default model overrides",
+    )
 
     @property
     def has_alchemy_key(self) -> bool:
@@ -102,7 +127,7 @@ class Settings(BaseSettings):
     @property
     def has_zai_key(self) -> bool:
         return bool(self.z_api_key)
-    
+
     @property
     def has_llm_key(self) -> bool:
         """Check if we have an API key for the configured LLM provider"""
@@ -113,6 +138,10 @@ class Settings(BaseSettings):
         elif self.llm_provider.lower() in ["zai", "z"]:
             return self.has_zai_key
         return False
+
+    def resolve_default_model(self, provider: str) -> str:
+        provider_lower = provider.lower()
+        return self.default_provider_models.get(provider_lower, self.llm_model)
 
 
 # Global settings instance
