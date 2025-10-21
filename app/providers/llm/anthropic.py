@@ -16,10 +16,12 @@ except ImportError:
 class AnthropicProvider(LLMProvider):
     """Anthropic Claude LLM Provider implementation"""
 
-    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514", **kwargs):
+    def __init__(self, api_key: str, model: Optional[str] = None, **kwargs):
         if not anthropic:
             raise ImportError("anthropic package not installed. Install with: pip install anthropic")
-        
+        if not model:
+            raise ValueError("AnthropicProvider requires a model to be specified")
+
         super().__init__(api_key, model, **kwargs)
 
     def _setup_client(self, **kwargs) -> None:

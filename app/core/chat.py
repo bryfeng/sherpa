@@ -40,8 +40,10 @@ def _agent_cache_key(provider_name: Optional[str], model: Optional[str]) -> str:
     return f"{provider}:{model_value}"
 
 
-def _create_agent(provider_name: Optional[str], model: Optional[str]) -> Agent:
+def _create_agent(provider_name: Optional[str] = None, model: Optional[str] = None) -> Agent:
     llm_provider = get_llm_provider(provider_name=provider_name, model=model)
+    resolved_provider = _normalize_provider(provider_name)
+    resolved_model = llm_provider.model
 
     persona_manager = PersonaManager()
     context_manager = ContextManager(
@@ -54,19 +56,21 @@ def _create_agent(provider_name: Optional[str], model: Optional[str]) -> Agent:
         persona_manager=persona_manager,
         context_manager=context_manager,
         logger=_logger,
+        provider_id=resolved_provider,
+        model_id=resolved_model,
     )
 
     _logger.info(
         "Agent system initialized for provider=%s model=%s",
-        provider_name or settings.llm_provider,
-        model or settings.llm_model,
+        resolved_provider,
+        resolved_model,
     )
     key = _agent_cache_key(provider_name, model)
     _agent_provider_cache[key] = _normalize_provider(provider_name)
     return agent
 
 
-def _get_agent(provider_name: Optional[str], model: Optional[str]) -> Agent:
+def _get_agent(provider_name: Optional[str] = None, model: Optional[str] = None) -> Agent:
     key = _agent_cache_key(provider_name, model)
     agent = _agent_cache.get(key)
     if agent is None:
@@ -130,10 +134,14 @@ async def run_chat(request: ChatRequest) -> ChatResponse:
 
     except Exception as exc:  # pragma: no cover - defensive fallback
         _logger.error(f"Chat processing error: {exc}", exc_info=True)
+        provider_hint = _normalize_provider(getattr(request, "llm_provider", None))
+        model_hint = _normalize_model(getattr(request, "llm_model", None)) or settings.resolve_default_model(provider_hint)
         return ChatResponse(
             reply="I apologize, but I'm experiencing technical difficulties. Please try again in a moment.",
             panels={},
-            sources=[]
+            sources=[],
+            llm_provider=provider_hint,
+            llm_model=model_hint,
         )
 
 

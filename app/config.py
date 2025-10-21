@@ -1,6 +1,6 @@
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict, List, Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     z_api_key: str = Field(default="", description="Z AI API key")
     
     # LLM Configuration
-    llm_model: str = Field(default="claude-3-5-sonnet-20241022", description="Default LLM model")
+    llm_model: str = Field(default="claude-sonnet-4-20250514", description="Default LLM model")
     max_tokens: int = Field(default=4000, description="Maximum tokens for LLM response")
     temperature: float = Field(default=0.7, description="LLM temperature setting")
     context_window_size: int = Field(default=8000, description="Context window size for conversations")
@@ -98,14 +98,26 @@ class Settings(BaseSettings):
     default_per_trade_risk_cap_usd: float = Field(default=150.0, description="Default maximum per-trade risk in USD")
     default_kelly_cap: float = Field(default=0.5, description="Maximum Kelly fraction allowed for sizing suggestions")
     default_var_conf: float = Field(default=0.95, description="Default confidence level for VaR/ES calculations")
-    default_provider_models: Dict[str, str] = Field(
+    provider_models_catalog: Dict[str, List[Dict[str, Any]]] = Field(
         default_factory=lambda: {
-            "anthropic": "claude-3-5-sonnet-20241022",
-            "claude": "claude-3-5-sonnet-20241022",
-            "zai": "glm-4.6",
-            "z": "glm-4.6",
+            "anthropic": [
+                {
+                    "id": "claude-sonnet-4-20250514",
+                    "label": "Claude Sonnet 4",
+                    "description": "Balanced depth and latency for daily use.",
+                    "default": True,
+                },
+            ],
+            "zai": [
+                {
+                    "id": "glm-4.6",
+                    "label": "Zeta GLM 4.6",
+                    "description": "Relay-native experimentation model.",
+                    "default": True,
+                }
+            ],
         },
-        description="Provider-specific default model overrides",
+        description="Provider models metadata surfaced to clients",
     )
 
     @property
@@ -141,7 +153,29 @@ class Settings(BaseSettings):
 
     def resolve_default_model(self, provider: str) -> str:
         provider_lower = provider.lower()
-        return self.default_provider_models.get(provider_lower, self.llm_model)
+        options = self.provider_models_catalog.get(provider_lower, [])
+        for option in options:
+            default_flag = option.get("default")
+            if isinstance(default_flag, str):
+                is_default = default_flag.lower() in {"true", "1", "yes"}
+            else:
+                is_default = bool(default_flag)
+            if is_default:
+                return option.get("id", self.llm_model)
+        if options:
+            return options[0].get("id", self.llm_model)
+        return self.llm_model
+
+    def resolve_provider_for_model(self, model_id: str) -> Optional[str]:
+        target = (model_id or "").strip().lower()
+        if not target:
+            return None
+        for provider, options in self.provider_models_catalog.items():
+            for option in options:
+                option_id = option.get("id")
+                if option_id and option_id.lower() == target:
+                    return provider
+        return None
 
 
 # Global settings instance

@@ -24,7 +24,7 @@ class ZAIProvider(LLMProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "glm-4.6",
+        model: Optional[str] = None,
         *,
         base_url: str | None = None,
         timeout: float = 40.0,
@@ -33,6 +33,8 @@ class ZAIProvider(LLMProvider):
         self.base_url = (base_url or "https://api.z.ai").rstrip("/")
         self.timeout = timeout
         self._chat_completions_path = "/api/paas/v4/chat/completions"
+        if not model:
+            raise ValueError("ZAIProvider requires a model to be specified")
         super().__init__(api_key, model, **kwargs)
 
     def _setup_client(self, **kwargs: Any) -> None:

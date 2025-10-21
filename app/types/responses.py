@@ -16,6 +16,8 @@ class ChatResponse(BaseModel):
     panels: Dict[str, Any] = Field(default_factory=dict, description="Structured data panels")
     sources: list = Field(default_factory=list, description="Data sources used")
     conversation_id: Optional[str] = Field(default=None, description="Conversation identifier for memory continuity")
+    llm_provider: Optional[str] = Field(default=None, description="Canonical identifier of the LLM provider that generated the response")
+    llm_model: Optional[str] = Field(default=None, description="Identifier of the LLM model used for the response")
 
 
 class EntitlementResponse(BaseModel):

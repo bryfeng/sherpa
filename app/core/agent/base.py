@@ -62,13 +62,17 @@ class Agent:
         persona_manager: Optional['PersonaManager'] = None,
         context_manager: Optional['ContextManager'] = None,
         style_manager: Optional['StyleManager'] = None,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        provider_id: Optional[str] = None,
+        model_id: Optional[str] = None,
     ):
         self.llm_provider = llm_provider
         self.persona_manager = persona_manager
         self.context_manager = context_manager
         self.style_manager = style_manager or StyleManager()
         self.logger = logger or logging.getLogger(__name__)
+        self.provider_id = provider_id or llm_provider.__class__.__name__.lower()
+        self.model_id = model_id or getattr(llm_provider, "model", None)
         
         # Agent state
         self._active_conversations: Dict[str, Dict] = {}
@@ -1092,4 +1096,6 @@ class Agent:
             panels=agent_response.panels,
             sources=agent_response.sources,
             conversation_id=agent_response.conversation_id,
+            llm_provider=self.provider_id,
+            llm_model=self.model_id or getattr(self.llm_provider, "model", None),
         )
