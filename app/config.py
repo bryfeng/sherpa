@@ -1,8 +1,10 @@
+import os
+
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,6 +18,16 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore"
     )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Ensure we pick up legacy environment variable aliases."""
+
+        super().model_post_init(__context)
+
+        if not self.z_api_key:
+            fallback = os.getenv("ZAI_API_KEY") or os.getenv("ZAI_KEY")
+            if fallback:
+                object.__setattr__(self, "z_api_key", fallback)
 
     # Server Settings
     host: str = Field(default="127.0.0.1", description="Server host")
@@ -79,7 +91,11 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="anthropic", description="Default LLM provider")
     anthropic_api_key: str = Field(default="", description="Anthropic API key")
     openai_api_key: str = Field(default="", description="OpenAI API key")
-    z_api_key: str = Field(default="", description="Z AI API key")
+    z_api_key: str = Field(
+        default="",
+        description="Z AI API key",
+        validation_alias=AliasChoices("z_api_key", "zai_api_key", "Z_API_KEY", "ZAI_API_KEY"),
+    )
     
     # LLM Configuration
     llm_model: str = Field(default="claude-sonnet-4-20250514", description="Default LLM model")
