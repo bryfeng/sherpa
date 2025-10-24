@@ -13,36 +13,10 @@ This system has been completely transformed from basic hardcoded responses to a 
 
 ## ✨ Key Features
 
-### 🧠 **Intelligent Agent System**
-- **Multi-Persona AI**: 4 distinct personalities for different conversation styles
-- **Context Awareness**: Remembers conversation history and user preferences  
-- **Smart Tool Integration**: Seamlessly combines portfolio data with LLM insights
-- **Dynamic Response Styling**: Adapts communication based on user needs
-
-### 💼 **Portfolio Analysis**
-- **Complete Token Analysis**: Balances, USD values, token metadata for any Ethereum address
-- **AI-Generated Insights**: Intelligent analysis and recommendations from LLMs
-- **Real-time Data**: Alchemy blockchain data + CoinGecko price feeds
-- **Structured + Conversational**: Both API data and natural language explanations
-
-### 📈 **Market Intelligence for Action**
-- **Trending EVM Tokens**: Background service pulls high-velocity assets from CoinGecko and filters to Relay-supported EVM chains
-- **Actionable Swaps**: Trending payloads include contract addresses + chain IDs so the chat agent can prepare Relay swap quotes instantly
-- **Future Expansion Ready**: Non-EVM chains (e.g., Solana) are isolated for phased support without disturbing the current flow
-
-### 🛡️ **Perps Copilot with Risk Guardrails**
-- **Pure Simulation**: New `/perps/simulate` endpoint returns read-only perpetuals analytics with no live trading
-- **Risk Analytics**: Includes funding impact, liquidation estimation, VaR/ES(95%), and Kelly-capped sizing suggestions
-- **Policy Enforcement**: Conversation-scoped limits (max leverage, notional, daily loss, allowlisted markets) surface clear violation messages
-- **Explainability Ready**: Responses include reason strings, risk bucket scores, and CTA-friendly take-profit/stop-loss suggestions for the chat UI
-- **Mockable Providers**: GMX v2, Perennial, and CEX proxy adapters default to deterministic data via `FEATURE_FLAG_FAKE_PERPS`
-
-### 🔧 **Developer-Friendly**
-- **Multi-Provider LLM Support**: Currently Anthropic Claude, designed for OpenAI/others
-- **FastAPI Backend**: REST API with automatic OpenAPI documentation
-- **Comprehensive Testing**: Agent system, API integration, and provider testing
-- **CLI Tools**: Command-line interface for development and testing
-- **Reusable Services**: `TrendingTokenService` provides cached, EVM-only market movers for UI and agent workflows
+- **LLM-first agent** that keeps conversation context, swaps personas on demand, and blends tool outputs with natural language answers.
+- **Portfolio intelligence** with on-chain balances, price feeds, and AI commentary in the same response payload.
+- **Market signals + perps simulator** delivering trending tokens, bridge-ready quotes, and risk-checked strategies without live trading.
+- **Developer-friendly tooling**: FastAPI endpoints, pluggable LLM providers, deterministic mocks, and a lean CLI/testing workflow.
 
 ## 🚀 Quick Start
 
@@ -97,125 +71,9 @@ curl "http://localhost:8000/tools/prices/trending?limit=10"
 
 ## 🎭 AI Persona System
 
-The system includes 4 distinct AI personalities that you can switch between, and **all personas are fully customizable** through user-friendly YAML configuration files:
-
-### 🤗 **Friendly Crypto Guide** (Default)
-- **Style**: Casual, conversational, encouraging
-- **Best For**: Beginners, general portfolio questions
-- **Switch**: Automatic default or `/persona friendly`
-- **Example**: *"Hey there! 👋 I'd love to help you understand your crypto portfolio! Think of it like a digital wallet..."*
-
-### 🔬 **Technical DeFi Analyst**  
-- **Style**: Detailed technical analysis, protocol-focused
-- **Best For**: Advanced users, yield farming, protocol analysis
-- **Switch**: `/persona technical`
-- **Example**: *"Analyzing your portfolio's DeFi exposure: Your LP tokens show impermanent loss risk of..."*
-
-### 💼 **Professional Portfolio Advisor**
-- **Style**: Formal financial guidance, risk-aware
-- **Best For**: Investment strategy, portfolio optimization
-- **Switch**: `/persona professional`  
-- **Example**: *"Based on modern portfolio theory, your current allocation presents concentration risk..."*
-
-### 🎓 **Educational Crypto Teacher**
-- **Style**: Patient explanations, learning-focused
-- **Best For**: Understanding concepts, crypto education
-- **Switch**: `/persona educational`
-- **Example**: *"Let me explain what each token in your portfolio does, starting with the basics..."*
-
-### 🎨 **Dynamic Response Styles**
-Combine personas with response styles for ultimate customization:
-- **`/style casual`** - Relaxed, friendly communication
-- **`/style technical`** - Precise, data-focused responses  
-- **`/style brief`** - Concise, to-the-point answers
-- **`/style educational`** - Detailed explanations with examples
-
-**Example**: `/persona technical` + `/style brief` = *"Portfolio TVL: $1.2M. ETH dominance: 65%. DeFi exposure: 12% via UNI/AAVE. Risk score: Medium."*
-
-## 🎨 Persona Customization
-
-**🔥 New Feature**: All personas are now **100% customizable** through user-friendly YAML files! No coding required.
-
-### Quick Persona Customization
-```bash
-# 1. Navigate to personas directory
-cd personas/
-
-# 2. Edit any persona (they're just text files!)
-# Examples:
-nano friendly.yaml      # Make the friendly guide more enthusiastic
-nano technical.yaml     # Add new technical keywords
-nano professional.yaml  # Adjust formality level
-nano educational.yaml   # Modify teaching style
-
-# 3. Changes take effect immediately - no restart needed!
-```
-
-### YAML Configuration Structure
-Each persona is defined in a simple, commented YAML file:
-```yaml
-# personas/friendly.yaml
-name: friendly
-display_name: "Friendly Crypto Guide"
-description: "Approachable and encouraging crypto assistant"
-
-# Communication Style
-tone: "warm and conversational"
-formality: "casual"
-technical_depth: "medium - explains concepts clearly"
-use_emojis: true
-response_length: "medium"
-
-# Areas of Expertise
-specializations:
-  - portfolio_analysis
-  - crypto_education
-  - user_encouragement
-
-# System Prompt - The AI's core behavior instructions
-system_prompt: |
-  You are a friendly and knowledgeable crypto portfolio assistant.
-  Your personality is warm, approachable, and encouraging...
-  [Full customizable prompt]
-
-# Auto-detection keywords (when to use this persona automatically)
-auto_detection_keywords:
-  - friendly
-  - help
-  - explain
-  - new to crypto
-  - beginner
-```
-
-### Customization Examples
-
-**Make a persona more enthusiastic:**
-```yaml
-# Edit personas/friendly.yaml
-tone: "extremely enthusiastic and upbeat"
-formality: "very casual and energetic"
-```
-
-**Add technical expertise:**
-```yaml
-# Edit personas/technical.yaml
-auto_detection_keywords:
-  - yield farming
-  - liquidity pools
-  - smart contracts  # New keywords
-  - defi protocols
-```
-
-**Create conservative financial advice:**
-```yaml
-# Edit personas/professional.yaml
-system_prompt: |
-  Always emphasize risks before opportunities.
-  Suggest diversification and conservative strategies.
-  Warn about market volatility frequently.
-```
-
-📖 **Full Customization Guide**: See `docs/persona_customization.md` for complete documentation with examples, best practices, and troubleshooting.
+- Four built-in personas (`friendly`, `technical`, `professional`, `educational`) switchable via `/persona ...`.
+- Response styles like `/style brief`, `/style casual`, or `/style technical` layer tone control on top.
+- Persona definitions live in `personas/*.yaml`; edit and save to customize without restarts. Full docs: `docs/persona_customization.md`.
 
 ## 💬 Example Conversations
 
@@ -534,23 +392,9 @@ Try these addresses to see the AI system in action:
 
 ## 🚧 What's Next
 
-### Recently Completed ✅
-- **✅ Dynamic Response Styles**: `/style casual`, `/style technical`, `/style brief`, `/style educational` - **IMPLEMENTED!**
-- **✅ YAML Persona Customization**: Complete external persona configuration system - **IMPLEMENTED!**
-- **✅ Enhanced Token Metadata**: Improved token symbol resolution with fallbacks - **IMPLEMENTED!**
-
-### Planned Enhancements (Phase D - In Progress)
-- **Cross-session Memory**: Remember user preferences between conversations
-- **Advanced Crypto Knowledge Integration**: Enhanced crypto protocol understanding
-- **Conversation Learning**: Adaptive responses based on user interaction patterns
-- **DeFi Protocol Integration**: Deep Uniswap, Aave, Compound analysis
-- **Market Sentiment Analysis**: Real-time market insights and news integration
-
-### Future Roadmap
-- **Multi-chain Support**: Polygon, Base, Arbitrum, Optimism
-- **Advanced Analytics**: Risk metrics, correlation analysis, performance tracking
-- **Transaction Simulation**: Preview swap/bridge operations before execution  
-- **Real-time Updates**: WebSocket integration for live portfolio updates
+- Ship cross-session memory so the agent remembers wallet context between chats.
+- Broaden protocol/domain knowledge and surface richer market sentiment signals.
+- Bring multi-chain coverage and deeper analytics once the above foundations are stable.
 
 ## 🤝 Contributing
 
