@@ -17,7 +17,14 @@ class CoingeckoProvider(PriceProvider):
         self.api_key = settings.coingecko_api_key
         self.base_url = "https://api.coingecko.com/api/v3"
         self._platform_cache: Dict[str, Dict[str, str]] = {}
+        self._coin_cache: Dict[str, Any] = {}
         
+    def _build_headers(self) -> Dict[str, str]:
+        headers: Dict[str, str] = {}
+        if self.api_key:
+            headers["X-CG-Demo-API-Key"] = self.api_key
+        return headers
+
     async def ready(self) -> bool:
         return settings.enable_coingecko  # API key is optional for basic tier
     
@@ -119,10 +126,8 @@ class CoingeckoProvider(PriceProvider):
     
     async def get_token_info(self, token_address: str) -> Dict[str, Any]:
         """Get token metadata from Coingecko"""
-        headers = {}
-        if self.api_key:
-            headers["X-CG-Demo-API-Key"] = self.api_key
-        
+        headers = self._build_headers()
+
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{self.base_url}/coins/ethereum/contract/{token_address}",
@@ -137,11 +142,183 @@ class CoingeckoProvider(PriceProvider):
             data = response.json()
             
             return {
+                "id": data.get("id"),
                 "symbol": data.get("symbol", "").upper(),
                 "name": data.get("name", ""),
                 "decimals": data.get("detail_platforms", {}).get("ethereum", {}).get("decimal_place", 18),
+                "contract_address": data.get("contract_address") or token_address.lower(),
+                "image": (data.get("image") or {}).get("small"),
+                "platforms": data.get("platforms") or {},
                 "_source": {"name": "coingecko", "url": "https://coingecko.com"}
             }
+
+    async def _get_coin_data(self, coin_id: str) -> Optional[Dict[str, Any]]:
+        if not coin_id:
+            return None
+
+        cached = self._coin_cache.get(coin_id)
+        if cached is not None:
+            return cached or None
+
+        headers = self._build_headers()
+        params = {
+            "localization": "false",
+            "tickers": "false",
+            "market_data": "false",
+            "community_data": "false",
+            "developer_data": "false",
+            "sparkline": "false",
+        }
+
+        if not self.api_key:
+            await asyncio.sleep(0.3)
+
+        async with httpx.AsyncClient() as client:
+            for attempt in range(2):
+                try:
+                    resp = await client.get(
+                        f"{self.base_url}/coins/{coin_id}",
+                        headers=headers,
+                        params=params,
+                        timeout=self.timeout_s,
+                    )
+                    if resp.status_code == 404:
+                        self._coin_cache[coin_id] = {}
+                        return None
+                    resp.raise_for_status()
+                    data = resp.json()
+                    self._coin_cache[coin_id] = data
+                    return data
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 429 and attempt == 0:
+                        await asyncio.sleep(2)
+                        continue
+                    raise
+        return None
+
+    async def get_coin_metadata(self, coin_id: str) -> Dict[str, Any]:
+        data = await self._get_coin_data(coin_id)
+        if not data:
+            return {}
+
+        image = data.get("image") or {}
+        platforms_raw = data.get("platforms") or {}
+        normalized_platforms = {k: str(v).lower() for k, v in platforms_raw.items() if v}
+        if normalized_platforms:
+            self._platform_cache[coin_id] = normalized_platforms
+
+        return {
+            "id": data.get("id", coin_id),
+            "symbol": str(data.get("symbol", "")).upper(),
+            "name": data.get("name"),
+            "platforms": normalized_platforms,
+            "image": image.get("small") or image.get("thumb"),
+            "market_cap_rank": data.get("market_cap_rank"),
+            "contract_address": normalized_platforms.get("ethereum"),
+            "_source": {"name": "coingecko", "url": "https://coingecko.com"},
+        }
+
+    async def search_coins(self, query: str, *, limit: int = 10) -> List[Dict[str, Any]]:
+        if not query:
+            return []
+
+        headers = self._build_headers()
+        params = {"query": query}
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{self.base_url}/search",
+                headers=headers,
+                params=params,
+                timeout=self.timeout_s,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+
+        coins = payload.get("coins") or []
+        if limit and limit > 0:
+            return coins[:limit]
+        return coins
+
+    async def get_coin_market_chart(
+        self,
+        coin_id: str,
+        *,
+        vs_currency: str = "usd",
+        days: str = "7",
+        interval: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not coin_id:
+            return {}
+
+        headers = self._build_headers()
+        params: Dict[str, Any] = {
+            "vs_currency": vs_currency,
+            "days": days,
+        }
+        if interval:
+            params["interval"] = interval
+
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.get(
+                    f"{self.base_url}/coins/{coin_id}/market_chart",
+                    headers=headers,
+                    params=params,
+                    timeout=self.timeout_s,
+                )
+                if resp.status_code == 404:
+                    return {}
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401 and "interval" in params:
+                    fallback_params = dict(params)
+                    fallback_params.pop("interval", None)
+                    retry = await client.get(
+                        f"{self.base_url}/coins/{coin_id}/market_chart",
+                        headers=headers,
+                        params=fallback_params,
+                        timeout=self.timeout_s,
+                    )
+                    if retry.status_code == 404:
+                        return {}
+                    retry.raise_for_status()
+                    return retry.json()
+                raise
+
+    async def get_coin_ohlc(
+        self,
+        coin_id: str,
+        *,
+        vs_currency: str = "usd",
+        days: str | int = "7",
+    ) -> List[List[float]]:
+        if not coin_id:
+            return []
+
+        headers = self._build_headers()
+        params: Dict[str, Any] = {
+            "vs_currency": vs_currency,
+            "days": days,
+        }
+
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.get(
+                    f"{self.base_url}/coins/{coin_id}/ohlc",
+                    headers=headers,
+                    params=params,
+                    timeout=self.timeout_s,
+                )
+                if resp.status_code == 404:
+                    return []
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401:
+                    return []
+                raise
 
     async def get_top_coins(self, limit: int = 5, exclude_stable: bool = True) -> List[Dict[str, Any]]:
         """Get top coins by market cap, optionally excluding stablecoins."""
@@ -297,43 +474,9 @@ class CoingeckoProvider(PriceProvider):
         if cached is not None:
             return cached
 
-        headers = {}
-        if self.api_key:
-            headers["X-CG-Demo-API-Key"] = self.api_key
-
-        params = {
-            "localization": "false",
-            "tickers": "false",
-            "market_data": "false",
-            "community_data": "false",
-            "developer_data": "false",
-            "sparkline": "false",
-        }
-
-        if not self.api_key:
-            await asyncio.sleep(0.3)
-
-        async with httpx.AsyncClient() as client:
-            for attempt in range(2):
-                try:
-                    resp = await client.get(
-                        f"{self.base_url}/coins/{coin_id}",
-                        headers=headers,
-                        params=params,
-                        timeout=self.timeout_s,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    break
-                except httpx.HTTPStatusError as exc:
-                    if exc.response.status_code == 429:
-                        if attempt == 0:
-                            await asyncio.sleep(2)
-                            continue
-                        return {}
-                    raise
-            else:
-                return {}
+        data = await self._get_coin_data(coin_id)
+        if not data:
+            return {}
 
         platforms: Dict[str, Any] = data.get("platforms") or {}
         normalized = {k: str(v).lower() for k, v in platforms.items() if v}

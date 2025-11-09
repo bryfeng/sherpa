@@ -1,185 +1,277 @@
+from __future__ import annotations
+
 import asyncio
 from decimal import Decimal
 from datetime import datetime
-from typing import List, Dict, Any
-from ..types import ToolEnvelope, Source, TokenBalance, Portfolio
+from typing import Any, Dict, List
+
+from ..cache import cache
 from ..providers.alchemy import AlchemyProvider
 from ..providers.coingecko import CoingeckoProvider
-from ..cache import cache
+from ..providers.solana import SolanaProvider
+from ..services.address import is_evm_chain, normalize_chain
+from ..types import Portfolio, Source, TokenBalance, ToolEnvelope
+
+CACHE_TTL_SECONDS = 300
 
 
 async def get_portfolio(address: str, chain: str = "ethereum") -> ToolEnvelope:
-    """Get complete portfolio for an address including prices"""
-    
-    # Check cache first
-    cache_key = f"portfolio:{chain}:{address.lower()}"
+    """Return portfolio data for the requested wallet/chain pair."""
+
+    normalized_chain = normalize_chain(chain)
+    cache_key = f"portfolio:{normalized_chain}:{address.lower()}"
     cached_result = await cache.get(cache_key)
     if cached_result:
         cached_result.cached = True
         return cached_result
-    
+
     start_time = datetime.now()
-    sources = []
-    warnings = []
-    
+
+    if normalized_chain == "solana":
+        result = await _solana_portfolio(address, start_time)
+    elif is_evm_chain(normalized_chain):
+        result = await _evm_portfolio(address, normalized_chain, start_time)
+    else:
+        result = ToolEnvelope(
+            data=None,
+            sources=[],
+            fetched_at=start_time,
+            cached=False,
+            warnings=[f"Chain '{normalized_chain}' is not supported"],
+        )
+
+    if result.data is not None:
+        await cache.set(cache_key, result, ttl=CACHE_TTL_SECONDS)
+
+    return result
+
+
+async def _evm_portfolio(address: str, chain: str, start_time: datetime) -> ToolEnvelope:
+    sources: List[Source] = []
+    warnings: List[str] = []
+
     try:
-        # Initialize providers
         alchemy = AlchemyProvider()
         coingecko = CoingeckoProvider()
-        
-        # Check provider readiness
+
         if not await alchemy.ready():
-            raise Exception("Alchemy provider not available")
-        
-        if not await coingecko.ready():
+            raise RuntimeError("Alchemy provider not available")
+
+        coingecko_ready = await coingecko.ready()
+        if not coingecko_ready:
             warnings.append("Coingecko provider unavailable - prices may be missing")
-        
-        # Get native ETH balance
-        eth_balance_data = await alchemy.get_native_balance(address, chain)
-        sources.append(Source(
-            name=eth_balance_data["_source"]["name"],
-            url=eth_balance_data["_source"]["url"]
-        ))
-        
-        # Get ERC-20 token balances
-        token_balances_data = await alchemy.get_token_balances(address, chain)
-        
-        # Collect all token addresses for metadata and price lookups
-        token_addresses = [token["address"] for token in token_balances_data["tokens"]]
-        
-        # Get token metadata in parallel
+
+        eth_balance = await alchemy.get_native_balance(address, chain)
+        sources.append(Source(**eth_balance["_source"]))
+
+        token_balances = await alchemy.get_token_balances(address, chain)
+        token_addresses = [token["address"] for token in token_balances["tokens"]]
+
         metadata_tasks = []
         if token_addresses:
-            # Split into batches to avoid hitting API limits
             batch_size = 10
             for i in range(0, len(token_addresses), batch_size):
-                batch = token_addresses[i:i + batch_size]
+                batch = token_addresses[i : i + batch_size]
                 metadata_tasks.append(alchemy.get_token_metadata(batch))
-        
+
         metadata_results = await asyncio.gather(*metadata_tasks, return_exceptions=True)
-        
-        # Combine metadata
-        all_metadata = {}
+        all_metadata: Dict[str, Dict[str, Any]] = {}
         for result in metadata_results:
             if not isinstance(result, Exception):
                 all_metadata.update(result)
-        
-        # Get prices
-        prices = {}
-        if await coingecko.ready():
+
+        prices: Dict[str, Decimal] = {}
+        if coingecko_ready:
             try:
-                # Get ETH price
-                eth_price_data = await coingecko.get_eth_price()
-                if eth_price_data:
-                    prices["ETH"] = eth_price_data["price_usd"]
-                    sources.append(Source(
-                        name=eth_price_data["_source"]["name"],
-                        url=eth_price_data["_source"]["url"]
-                    ))
-                
-                # Get token prices
+                eth_price = await coingecko.get_eth_price()
+                if eth_price:
+                    prices["ETH"] = Decimal(str(eth_price["price_usd"]))
+                    sources.append(Source(**eth_price["_source"]))
+
                 if token_addresses:
-                    token_prices_data = await coingecko.get_token_prices(token_addresses)
-                    for addr, price_data in token_prices_data.items():
-                        prices[addr] = price_data["price_usd"]
-            except Exception as e:
-                warnings.append(f"Failed to fetch prices: {str(e)}")
-        
-        # Build token list starting with ETH
-        tokens = []
-        
-        # Add ETH
-        eth_balance_wei = int(eth_balance_data["balance_wei"])
+                    token_prices = await coingecko.get_token_prices(token_addresses)
+                    for addr, price_data in token_prices.items():
+                        prices[addr.lower()] = Decimal(str(price_data["price_usd"]))
+            except Exception as exc:  # pragma: no cover - network errors are non-deterministic
+                warnings.append(f"Failed to fetch prices: {exc}")
+
+        tokens: List[TokenBalance] = []
+
+        eth_balance_wei = int(eth_balance["balance_wei"])
         eth_balance_formatted = f"{eth_balance_wei / 10**18:.6f}"
-        eth_price = Decimal(str(prices.get("ETH", 0)))
-        eth_value = Decimal(eth_balance_formatted) * eth_price
-        
-        tokens.append(TokenBalance(
-            symbol="ETH",
-            name="Ethereum",
-            address=None,
-            decimals=18,
-            balance_wei=str(eth_balance_wei),
-            balance_formatted=eth_balance_formatted,
-            price_usd=eth_price if eth_price > 0 else None,
-            value_usd=eth_value if eth_price > 0 else None
-        ))
-        
-        # Add ERC-20 tokens
-        for token_data in token_balances_data["tokens"]:
+        eth_price = prices.get("ETH")
+        eth_value = (Decimal(eth_balance_formatted) * eth_price) if eth_price else None
+        tokens.append(
+            TokenBalance(
+                symbol="ETH",
+                name="Ethereum",
+                address=None,
+                decimals=18,
+                balance_wei=str(eth_balance_wei),
+                balance_formatted=eth_balance_formatted,
+                price_usd=eth_price,
+                value_usd=eth_value,
+            )
+        )
+
+        for token_data in token_balances["tokens"]:
             token_addr = token_data["address"]
             balance_wei = int(token_data["balance_wei"])
-            
-            # Get metadata
+
             metadata = all_metadata.get(token_addr, {})
             symbol = metadata.get("symbol", "UNKNOWN")
             name = metadata.get("name", "Unknown Token")
             decimals = metadata.get("decimals", 18)
-            
-            # Calculate formatted balance
             balance_formatted = f"{balance_wei / 10**decimals:.6f}"
-            
-            # Get price and value
-            price = Decimal(str(prices.get(token_addr.lower(), 0)))
-            value = Decimal(balance_formatted) * price if price > 0 else None
-            
-            tokens.append(TokenBalance(
-                symbol=symbol,
-                name=name,
-                address=token_addr,
-                decimals=decimals,
-                balance_wei=str(balance_wei),
-                balance_formatted=balance_formatted,
-                price_usd=price if price > 0 else None,
-                value_usd=value
-            ))
+            price = prices.get(token_addr.lower())
+            value = (Decimal(balance_formatted) * price) if price else None
 
-        # Filter out spam and zero-value tokens, then sort by USD value desc
-        def _is_spam(tok: TokenBalance) -> bool:
-            return tok.symbol.startswith("[SPAM]") or tok.name.startswith("[SPAM]")
+            tokens.append(
+                TokenBalance(
+                    symbol=symbol,
+                    name=name,
+                    address=token_addr,
+                    decimals=decimals,
+                    balance_wei=str(balance_wei),
+                    balance_formatted=balance_formatted,
+                    price_usd=price,
+                    value_usd=value,
+                )
+            )
 
-        filtered_tokens = [
-            t for t in tokens
-            if (t.value_usd is not None and t.value_usd > 0) and not _is_spam(t)
-        ]
-
-        filtered_tokens.sort(key=lambda t: (t.value_usd or Decimal("0")), reverse=True)
-
-        # Calculate total portfolio value from filtered tokens only
+        filtered_tokens = _filter_and_rank_tokens(tokens)
         total_value = sum((t.value_usd or Decimal("0")) for t in filtered_tokens)
 
-        # Build portfolio
         portfolio = Portfolio(
             address=address,
             chain=chain,
             total_value_usd=total_value,
             token_count=len(filtered_tokens),
-            tokens=filtered_tokens
+            tokens=filtered_tokens,
         )
-        
-        # Calculate latency
+
         latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-        
-        # Create result envelope
-        result = ToolEnvelope(
+        return ToolEnvelope(
             data=portfolio,
             sources=sources,
             fetched_at=start_time,
             cached=False,
             latency_ms=latency_ms,
-            warnings=warnings
+            warnings=warnings,
         )
-        
-        # Cache the result
-        await cache.set(cache_key, result, ttl=300)  # 5 minute cache
-        
-        return result
-        
-    except Exception as e:
+
+    except Exception as exc:
         return ToolEnvelope(
             data=None,
             sources=sources,
             fetched_at=start_time,
             cached=False,
-            warnings=[f"Failed to fetch portfolio: {str(e)}"]
+            warnings=[f"Failed to fetch EVM portfolio: {exc}"],
         )
+
+
+async def _solana_portfolio(address: str, start_time: datetime) -> ToolEnvelope:
+    sources: List[Source] = []
+    warnings: List[str] = []
+
+    provider = SolanaProvider()
+    if not await provider.ready():
+        warnings.append("Solana provider not configured")
+        return ToolEnvelope(
+            data=None,
+            sources=sources,
+            fetched_at=start_time,
+            cached=False,
+            warnings=warnings,
+        )
+
+    try:
+        native_balance = await provider.get_native_balance(address)
+        token_balances = await provider.get_token_balances(address)
+
+        source_payload = native_balance.get("_source")
+        if isinstance(source_payload, dict):
+            sources.append(Source(**source_payload))
+
+        tokens: List[TokenBalance] = []
+        tokens.append(
+            TokenBalance(
+                symbol=native_balance.get("symbol", "SOL"),
+                name=native_balance.get("name", "Solana"),
+                address=None,
+                decimals=native_balance.get("decimals", 9),
+                balance_wei=str(native_balance.get("balance_wei", "0")),
+                balance_formatted=native_balance.get("balance_formatted", "0"),
+                price_usd=_coerce_decimal(native_balance.get("price_usd")),
+                value_usd=_coerce_decimal(native_balance.get("value_usd")),
+            )
+        )
+
+        for token in token_balances.get("tokens", []):
+            tokens.append(
+                TokenBalance(
+                    symbol=token.get("symbol", "UNKNOWN"),
+                    name=token.get("name", "Unknown Token"),
+                    address=token.get("address"),
+                    decimals=token.get("decimals", 0),
+                    balance_wei=str(token.get("balance_wei", "0")),
+                    balance_formatted=token.get("balance_formatted", "0"),
+                    price_usd=_coerce_decimal(token.get("price_usd")),
+                    value_usd=_coerce_decimal(token.get("value_usd")),
+                )
+            )
+
+        filtered_tokens = _filter_and_rank_tokens(tokens)
+        total_value = sum((t.value_usd or Decimal("0")) for t in filtered_tokens)
+
+        portfolio = Portfolio(
+            address=address,
+            chain="solana",
+            total_value_usd=total_value,
+            token_count=len(filtered_tokens),
+            tokens=filtered_tokens,
+        )
+
+        latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+        return ToolEnvelope(
+            data=portfolio,
+            sources=sources,
+            fetched_at=start_time,
+            cached=False,
+            latency_ms=latency_ms,
+            warnings=warnings,
+        )
+
+    except Exception as exc:
+        return ToolEnvelope(
+            data=None,
+            sources=sources,
+            fetched_at=start_time,
+            cached=False,
+            warnings=[f"Failed to fetch Solana portfolio: {exc}"],
+        )
+
+
+def _filter_and_rank_tokens(tokens: List[TokenBalance]) -> List[TokenBalance]:
+    def _is_spam(tok: TokenBalance) -> bool:
+        return tok.symbol.startswith("[SPAM]") or tok.name.startswith("[SPAM]")
+
+    filtered = [
+        t
+        for t in tokens
+        if (t.value_usd is not None and t.value_usd > 0)
+        and not _is_spam(t)
+    ]
+    filtered.sort(key=lambda t: (t.value_usd or Decimal("0")), reverse=True)
+    return filtered
+
+
+def _coerce_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (ValueError, TypeError):
+        return None

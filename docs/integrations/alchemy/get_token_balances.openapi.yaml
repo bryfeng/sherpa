@@ -1,0 +1,167 @@
+openapi: 3.1.0
+info:
+  title: Alchemy - Get Token Balances
+  version: 1.0.0
+  description: |
+    JSON-RPC call to fetch ERC-20 balances for a wallet. Mirrors the
+    `get_token_balances` coroutine in `sherpa/app/providers/alchemy.py`.
+servers:
+  - url: https://eth-mainnet.g.alchemy.com/v2/{apiKey}
+    description: Alchemy Ethereum Mainnet endpoint. Replace `{apiKey}` with your key.
+    variables:
+      apiKey:
+        default: YOUR_ALCHEMY_KEY
+        description: Alchemy API key with Ethereum mainnet access.
+paths:
+  /:
+    post:
+      operationId: alchemyGetTokenBalances
+      summary: Get ERC-20 balances for an address
+      description: Calls `alchemy_getTokenBalances` via Alchemy's JSON-RPC endpoint.
+      tags:
+        - Alchemy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - jsonrpc
+                - method
+                - params
+                - id
+              properties:
+                jsonrpc:
+                  type: string
+                  const: "2.0"
+                method:
+                  type: string
+                  const: alchemy_getTokenBalances
+                params:
+                  type: array
+                  minItems: 1
+                  maxItems: 2
+                  description: |
+                    First element is the wallet address. Optionally include a filter object as the
+                    second element per the Alchemy docs (omitted in Sherpa's default call).
+                  prefixItems:
+                    - $ref: '#/components/schemas/EthereumAddress'
+                  items:
+                    $ref: '#/components/schemas/TokenBalanceFilter'
+                id:
+                  type: integer
+                  default: 1
+            examples:
+              default:
+                value:
+                  jsonrpc: "2.0"
+                  method: alchemy_getTokenBalances
+                  params:
+                    - 0x00000000219ab540356cBB839Cbe05303d7705Fa
+                  id: 1
+      responses:
+        '200':
+          description: JSON-RPC success envelope returning ERC-20 balances.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/JsonRpcSuccess'
+                  - type: object
+                    properties:
+                      result:
+                        type: object
+                        required:
+                          - tokenBalances
+                        properties:
+                          address:
+                            $ref: '#/components/schemas/EthereumAddress'
+                          tokenBalances:
+                            type: array
+                            description: List of token balance entries.
+                            items:
+                              type: object
+                              required:
+                                - contractAddress
+                                - tokenBalance
+                              properties:
+                                contractAddress:
+                                  $ref: '#/components/schemas/EthereumAddress'
+                                tokenBalance:
+                                  type: string
+                                  description: Hex-encoded balance in wei.
+                                  example: "0xde0b6b3a7640000"
+                                error:
+                                  type: string
+                                  nullable: true
+                                  description: Present when the token could not be fetched.
+              examples:
+                success:
+                  value:
+                    jsonrpc: "2.0"
+                    id: 1
+                    result:
+                      address: 0x00000000219ab540356cBB839Cbe05303d7705Fa
+                      tokenBalances:
+                        - contractAddress: 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
+                          tokenBalance: "0xde0b6b3a7640000"
+        default:
+          description: Error response from Alchemy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcError'
+components:
+  schemas:
+    EthereumAddress:
+      type: string
+      pattern: ^0x[a-fA-F0-9]{40}$
+      description: Checksummed Ethereum address.
+    TokenBalanceFilter:
+      type: object
+      description: Optional filter object accepted by Alchemy's getTokenBalances method.
+      additionalProperties: true
+    JsonRpcSuccess:
+      type: object
+      required:
+        - jsonrpc
+        - id
+        - result
+      properties:
+        jsonrpc:
+          type: string
+          example: "2.0"
+        id:
+          type: integer
+          example: 1
+        result:
+          description: Method-specific response payload.
+          nullable: true
+    JsonRpcError:
+      type: object
+      required:
+        - jsonrpc
+        - id
+        - error
+      properties:
+        jsonrpc:
+          type: string
+          example: "2.0"
+        id:
+          type: integer
+          example: 1
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: integer
+              example: -32602
+            message:
+              type: string
+            data:
+              description: Additional error diagnostic info from Alchemy.
+              nullable: true

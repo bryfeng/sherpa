@@ -1,0 +1,111 @@
+openapi: 3.1.0
+info:
+  title: Alchemy - Get Owned NFTs For Contract
+  version: 1.0.0
+  description: |
+    REST call that retrieves NFTs owned by a wallet for a given contract. Mirrors the
+    `get_owned_nfts` coroutine in `sherpa/app/providers/alchemy.py`.
+servers:
+  - url: https://eth-mainnet.g.alchemy.com/v2/{apiKey}
+    description: Alchemy Ethereum Mainnet endpoint. Replace `{apiKey}` with your key.
+    variables:
+      apiKey:
+        default: YOUR_ALCHEMY_KEY
+        description: Alchemy API key with Ethereum mainnet access.
+paths:
+  /getNFTs/:
+    get:
+      operationId: alchemyGetOwnedNfts
+      summary: Fetch NFTs owned by an address for a specific contract
+      description: Wrapper around Alchemy's `getNFTs` REST endpoint.
+      tags:
+        - Alchemy
+      parameters:
+        - name: owner
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/EthereumAddress'
+          description: Wallet address to inspect.
+        - name: withMetadata
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["true", "false"]
+            default: "false"
+          description: Whether to include full metadata in the response.
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+          description: Number of results to return per page.
+        - name: pageKey
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Pagination token returned from a prior call.
+        - name: contractAddresses[]
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: ^0x[a-fA-F0-9]{40}$
+          description: Contract address to filter on (repeat for multiple contracts).
+      responses:
+        '200':
+          description: NFT ownership information.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - totalCount
+                  - ownedNfts
+                properties:
+                  totalCount:
+                    type: integer
+                    description: Total number of NFTs owned that match the filter.
+                  pageKey:
+                    type: string
+                    description: Cursor for fetching the next page of results.
+                    nullable: true
+                  ownedNfts:
+                    type: array
+                    description: NFT objects returned by Alchemy.
+                    items:
+                      type: object
+                      additionalProperties: true
+              examples:
+                success:
+                  value:
+                    totalCount: 3
+                    ownedNfts:
+                      - contract:
+                          address: 0xabc...
+                        id:
+                          tokenId: "1"
+                    pageKey: null
+        default:
+          description: Error response from Alchemy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - error
+                properties:
+                  error:
+                    type: string
+                    description: Error message returned by Alchemy.
+components:
+  schemas:
+    EthereumAddress:
+      type: string
+      pattern: ^0x[a-fA-F0-9]{40}$
+      description: Checksummed Ethereum address.

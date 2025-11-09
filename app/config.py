@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     enable_perennial: bool = Field(default=True, description="Enable Perennial perps provider")
     enable_cex_proxy: bool = Field(default=False, description="Enable centralized exchange proxy provider")
 
+    # Solana / Non-EVM Providers
+    solana_helius_api_key: str = Field(
+        default="",
+        description="Helius API key used for Solana portfolio aggregation",
+    )
+    solana_balances_base_url: str = Field(
+        default="https://api.helius.xyz",
+        description="Base URL for Solana balances API",
+    )
+
     # Pro entitlement (token gating)
     pro_token_address: str = Field(
         default="",

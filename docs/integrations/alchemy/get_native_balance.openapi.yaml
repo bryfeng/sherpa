@@ -1,0 +1,142 @@
+openapi: 3.1.0
+info:
+  title: Alchemy - Get Native Balance
+  version: 1.0.0
+  description: |
+    JSON-RPC call against the Alchemy Ethereum Mainnet endpoint that returns the native ETH
+    balance for a wallet. Matches the `get_native_balance` coroutine in
+    `sherpa/app/providers/alchemy.py`.
+servers:
+  - url: https://eth-mainnet.g.alchemy.com/v2/{apiKey}
+    description: Alchemy Ethereum Mainnet endpoint. Replace `{apiKey}` with your Alchemy key.
+    variables:
+      apiKey:
+        default: YOUR_ALCHEMY_KEY
+        description: Alchemy API key with Ethereum mainnet access.
+paths:
+  /:
+    post:
+      operationId: alchemyGetNativeBalance
+      summary: Get ETH balance for an address
+      description: |
+        Calls `eth_getBalance` via Alchemy's JSON-RPC endpoint. Returns the balance in wei as a
+        hex string which you can post-process into decimal form.
+      tags:
+        - Alchemy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - jsonrpc
+                - method
+                - params
+                - id
+              properties:
+                jsonrpc:
+                  type: string
+                  const: "2.0"
+                  description: JSON-RPC version.
+                method:
+                  type: string
+                  const: eth_getBalance
+                  description: RPC method name.
+                params:
+                  type: array
+                  description: |
+                    Two-item array where the first element is the checksummed wallet address and
+                    the second is the block tag (typically `"latest"`).
+                  prefixItems:
+                    - $ref: '#/components/schemas/EthereumAddress'
+                    - type: string
+                      description: Block tag such as `"latest"` or a hex block number.
+                  minItems: 2
+                  maxItems: 2
+                  items: false
+                  examples:
+                    - ["0x00000000219ab540356cBB839Cbe05303d7705Fa", "latest"]
+                id:
+                  type: integer
+                  description: Arbitrary request identifier.
+                  default: 1
+            examples:
+              default:
+                value:
+                  jsonrpc: "2.0"
+                  method: eth_getBalance
+                  params:
+                    - 0x00000000219ab540356cBB839Cbe05303d7705Fa
+                    - latest
+                  id: 1
+      responses:
+        '200':
+          description: JSON-RPC success envelope containing the balance in wei.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcSuccess'
+              examples:
+                success:
+                  value:
+                    jsonrpc: "2.0"
+                    id: 1
+                    result: "0x16345785d8a0000"
+        default:
+          description: Error response from Alchemy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcError'
+components:
+  schemas:
+    EthereumAddress:
+      type: string
+      pattern: ^0x[a-fA-F0-9]{40}$
+      description: Checksummed Ethereum address.
+    JsonRpcSuccess:
+      type: object
+      required:
+        - jsonrpc
+        - id
+        - result
+      properties:
+        jsonrpc:
+          type: string
+          example: "2.0"
+        id:
+          type: integer
+          example: 1
+        result:
+          type: string
+          description: Balance returned as a hex-encoded quantity.
+          example: "0xde0b6b3a7640000"
+    JsonRpcError:
+      type: object
+      required:
+        - jsonrpc
+        - id
+        - error
+      properties:
+        jsonrpc:
+          type: string
+          example: "2.0"
+        id:
+          type: integer
+          example: 1
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: integer
+              example: -32602
+            message:
+              type: string
+              example: 'invalid argument 0: hex string without 0x prefix'
+            data:
+              description: Additional error diagnostic info from Alchemy.
+              nullable: true

@@ -1,0 +1,164 @@
+openapi: 3.1.0
+info:
+  title: Sherpa Tools - Portfolio Endpoint
+  version: 1.0.0
+  description: |
+    OpenAPI description of the `/tools/portfolio` endpoint documented in
+    `docs/api/tools.md`. Fetches enriched portfolio data for a wallet using Sherpa's
+    aggregation over providers like Alchemy, CoinGecko, and Helius.
+servers:
+  - url: https://api.sherpa.example
+    description: Example Sherpa deployment base URL. Replace with your instance.
+paths:
+  /tools/portfolio:
+    get:
+      operationId: getPortfolio
+      summary: Retrieve enriched portfolio data for a wallet
+      tags:
+        - Tools
+      parameters:
+        - name: address
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/WalletAddress'
+          description: Wallet address for the requested chain (EVM `0x` addresses or Solana base58 strings).
+        - name: chain
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - ethereum
+              - solana
+            default: ethereum
+          description: Network identifier. Supported values: `ethereum`, `solana`.
+      responses:
+        '200':
+          description: Successful portfolio lookup.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioResponse'
+              examples:
+                success:
+                  value:
+                    success: true
+                    portfolio:
+                      address: 0xd8d...
+                      tokens:
+                        - symbol: ETH
+                          balance: "12.34"
+                          value_usd: 42000
+                      totals:
+                        value_usd: 42000
+                    sources:
+                      - provider: alchemy
+                      - provider: coingecko
+        '400':
+          description: Malformed address or invalid query parameter.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                badAddress:
+                  value:
+                    error: invalid_address
+                    detail: Address must be 0x-prefixed and 42 characters long.
+        '500':
+          description: Portfolio aggregation failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                providerFailure:
+                  value:
+                    error: aggregation_failed
+                    detail: Upstream provider unavailable.
+components:
+  schemas:
+    WalletAddress:
+      description: Union type covering supported wallet address formats.
+      oneOf:
+        - $ref: '#/components/schemas/EthereumAddress'
+        - $ref: '#/components/schemas/SolanaAddress'
+    EthereumAddress:
+      type: string
+      pattern: ^0x[a-fA-F0-9]{40}$
+      description: Checksummed Ethereum/EVM address.
+    SolanaAddress:
+      type: string
+      pattern: ^[1-9A-HJ-NP-Za-km-z]{32,44}$
+      description: Base58-encoded Solana address (32-44 characters).
+    PortfolioToken:
+      type: object
+      required:
+        - symbol
+        - balance
+      properties:
+        symbol:
+          type: string
+        balance:
+          type: string
+          description: Token balance in standard units (stringified decimal).
+        value_usd:
+          type: number
+          format: float
+          nullable: true
+          description: Estimated USD value for the position.
+    PortfolioTotals:
+      type: object
+      properties:
+        value_usd:
+          type: number
+          format: float
+          nullable: true
+          description: Aggregate USD valuation for the portfolio.
+    PortfolioSource:
+      type: object
+      required:
+        - provider
+      properties:
+        provider:
+          type: string
+          description: Upstream provider contributing to the data.
+    PortfolioResponse:
+      type: object
+      required:
+        - success
+        - portfolio
+        - sources
+      properties:
+        success:
+          type: boolean
+          example: true
+        portfolio:
+          type: object
+          required:
+            - address
+            - tokens
+          properties:
+            address:
+              $ref: '#/components/schemas/WalletAddress'
+            tokens:
+              type: array
+              items:
+                $ref: '#/components/schemas/PortfolioToken'
+            totals:
+              $ref: '#/components/schemas/PortfolioTotals'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/PortfolioSource'
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+        detail:
+          type: string
+          nullable: true

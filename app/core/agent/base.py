@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from ...providers.llm.base import LLMProvider, LLMMessage, LLMResponse
 from ...tools.portfolio import get_portfolio
 from ...services.trending import get_trending_tokens
+from ...services.token_chart import get_token_chart as fetch_token_chart
 from ...types.requests import ChatRequest, ChatMessage
 from ...types.responses import ChatResponse
 from ..bridge import BridgeManager
@@ -286,6 +287,23 @@ class Agent:
                 self.logger.error('Trending token fetch error: %s', exc)
                 tool_data['trending_error'] = str(exc)
 
+        chart_request = self._extract_token_chart_request(request)
+        if chart_request:
+            try:
+                chart_payload = await fetch_token_chart(
+                    coin_id=chart_request.get('coin_id'),
+                    symbol=chart_request.get('symbol'),
+                    contract_address=chart_request.get('contract_address'),
+                    chain=chart_request.get('chain') or request.chain,
+                    range_key=chart_request.get('range') or '7d',
+                    vs_currency=chart_request.get('vs_currency') or 'usd',
+                    include_candles=True,
+                )
+                tool_data['token_chart'] = chart_payload
+            except Exception as exc:
+                self.logger.error('Token chart fetch error: %s', exc)
+                tool_data['token_chart_error'] = str(exc)
+
         return tool_data
 
     def _needs_tvl_data(self, request: ChatRequest) -> bool:
@@ -504,6 +522,35 @@ class Agent:
             if summary:
                 reply_text = summary
 
+        if 'token_chart' in tool_data:
+            chart_info = tool_data['token_chart']
+            metadata = chart_info.get('metadata') or {}
+            symbol = metadata.get('symbol') or metadata.get('name') or chart_info.get('coin_id') or 'Token'
+            slug = ''.join(ch for ch in str(symbol).lower() if ch.isalnum()) or 'token'
+            panel_id = f'{slug}_price_chart'
+            panel_title = f"{symbol} price chart ({str(chart_info.get('range', '7d')).upper()})"
+            panel_sources = chart_info.get('sources') or [
+                {
+                    'name': 'CoinGecko',
+                    'url': 'https://www.coingecko.com',
+                }
+            ]
+            panels[panel_id] = {
+                'id': panel_id,
+                'kind': 'chart',
+                'title': panel_title,
+                'payload': chart_info,
+                'sources': panel_sources,
+                'metadata': {
+                    'symbol': metadata.get('symbol'),
+                    'range': chart_info.get('range'),
+                },
+            }
+            sources.extend(panel_sources)
+            summary = self._compose_token_chart_reply(symbol, chart_info.get('range', '7d'), chart_info.get('stats'))
+            if summary:
+                reply_text = summary
+
         bridge_info = tool_data.get('bridge_quote')
         if bridge_info:
             panel = bridge_info.get('panel')
@@ -706,6 +753,110 @@ class Agent:
 
         return None
 
+    def _extract_token_chart_request(self, request: ChatRequest) -> Optional[Dict[str, Any]]:
+        if not request.messages:
+            return None
+
+        message = request.messages[-1].content or ''
+        lowered = message.lower()
+        chart_keywords = (
+            'chart',
+            'candles',
+            'candlestick',
+            'price action',
+            'ohlc',
+            'price graph',
+            'price plot',
+            'price chart',
+        )
+
+        if not any(keyword in lowered for keyword in chart_keywords):
+            return None
+
+        contract_address = self._extract_contract_address(message)
+        symbol = self._find_token_symbol(message)
+
+        if not contract_address and not symbol:
+            return None
+
+        range_key = self._extract_chart_range(lowered)
+
+        request_payload: Dict[str, Any] = {
+            'range': range_key,
+            'vs_currency': 'usd',
+        }
+
+        if contract_address:
+            request_payload['contract_address'] = contract_address
+        if symbol and not contract_address:
+            # prefer explicit coin id when the symbol looks like a known slug
+            if symbol.lower() in {
+                'ethereum',
+                'bitcoin',
+                'solana',
+                'cardano',
+                'dogecoin',
+                'litecoin',
+                'polkadot',
+                'tron',
+                'avalanche',
+                'chainlink',
+            }:
+                request_payload['coin_id'] = symbol.lower()
+            else:
+                request_payload['symbol'] = symbol
+
+        return request_payload
+
+    def _extract_chart_range(self, message_lower: str) -> str:
+        if any(term in message_lower for term in ('1d', 'one day', '24h', 'today', 'daily')):
+            return '1d'
+        if any(term in message_lower for term in ('30d', 'thirty', 'month', '30 days')):
+            return '30d'
+        if '90d' in message_lower or 'quarter' in message_lower:
+            return '90d'
+        if '180d' in message_lower or '6 month' in message_lower or 'half year' in message_lower:
+            return '180d'
+        if '365' in message_lower or 'year' in message_lower or '12 month' in message_lower:
+            return '365d'
+        if 'max' in message_lower or 'all time' in message_lower:
+            return 'max'
+        return '7d'
+
+    def _extract_contract_address(self, message: str) -> Optional[str]:
+        match = re.search(r'0x[a-fA-F0-9]{40}', message)
+        if match:
+            return match.group(0).lower()
+        return None
+
+    def _find_token_symbol(self, message: str) -> Optional[str]:
+        symbol_matches = re.findall(r'\$([A-Za-z0-9]{2,10})', message)
+        if symbol_matches:
+            return symbol_matches[0].upper()
+
+        stopwords = {
+            'SHOW', 'PLEASE', 'PRICE', 'CHART', 'CANDLE', 'CANDLES', 'TOKEN', 'TOKENS', 'COIN', 'COINS',
+            'GRAPH', 'LOOK', 'SEE', 'CAN', 'YOU', 'THE', 'FOR', 'WITH', 'ABOUT', 'NEED', 'HELP', 'THIS',
+            'THAT', 'REAL', 'TIME', 'LATEST', 'GIVE', 'GET', 'WHAT', 'AN', 'A', 'ME', 'US', 'PLOT',
+            'DISPLAY', 'OF', 'INTO', 'CHECK', 'PRICEACTION', 'PLEASESHOW', 'PLEASES', 'ON', 'TO', 'IS',
+        }
+
+        words = re.findall(r'\b[a-zA-Z0-9]{2,15}\b', message)
+        candidates: List[str] = []
+        for word in words:
+            upper_word = word.upper()
+            if upper_word in stopwords:
+                continue
+            if upper_word.isdigit():
+                continue
+            if len(upper_word) > 12:
+                continue
+            candidates.append(upper_word)
+
+        for candidate in reversed(candidates):
+            return candidate
+        return None
+
     def _match_trending_token(
         self,
         tokens: Sequence[Dict[str, Any]],
@@ -844,7 +995,20 @@ class Agent:
                 f"Total value: ${portfolio['total_value_usd']} USD, "
                 f"{portfolio['token_count']} tokens"
             )
-            
+            tokens = portfolio.get('tokens') or []
+            if tokens:
+                snippets = []
+                for token in tokens[:8]:
+                    symbol = token.get('symbol') or token.get('name') or 'token'
+                    balance = token.get('balance_formatted') or '0'
+                    value = _fmt_price(token.get('value_usd'))
+                    snippets.append(f"{symbol}: {balance} ({value})")
+                remainder = len(tokens) - len(snippets)
+                holdings_summary = ", ".join(snippets)
+                if remainder > 0:
+                    holdings_summary += f", +{remainder} more"
+                formatted_parts.append(f"Holdings breakdown: {holdings_summary}")
+
         if 'portfolio_error' in tool_data:
             error_info = tool_data['portfolio_error']
             formatted_parts.append(f"Portfolio data unavailable: {error_info['error']}")
@@ -871,6 +1035,23 @@ class Agent:
                 formatted_parts.append(
                     f"Focus token {focus_name}: {focus_price}, 24h change {focus_change}, volume {focus_volume}"
                 )
+
+        if 'token_chart' in tool_data:
+            chart = tool_data['token_chart']
+            stats = chart.get('stats') or {}
+            meta = chart.get('metadata') or {}
+            symbol = meta.get('symbol') or meta.get('name') or chart.get('coin_id') or 'token'
+            latest_str = _fmt_price(stats.get('latest'))
+            change_pct = _fmt_pct(stats.get('change_pct'))
+            range_key = str(chart.get('range', '7d')).upper()
+            high_str = _fmt_price(stats.get('high'))
+            low_str = _fmt_price(stats.get('low'))
+            formatted_parts.append(
+                f"{symbol} {range_key} price: {latest_str} ({change_pct}), range {low_str} to {high_str}"
+            )
+
+        if 'token_chart_error' in tool_data:
+            formatted_parts.append(f"Token chart unavailable: {tool_data['token_chart_error']}")
 
         if 'trending_error' in tool_data:
             formatted_parts.append(f"Trending token data unavailable: {tool_data['trending_error']}")
@@ -985,6 +1166,43 @@ class Agent:
                 lines.append(f"- Range: min ${min_v:,.0f} on {min_d}, max ${max_v:,.0f} on {max_d}")
             lines.append(f"- Trend: {trend}")
             lines.append("- See the TVL chart panel on the right for details.")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def _compose_token_chart_reply(self, symbol: str, window: str, stats: Optional[Dict[str, Any]]) -> str:
+        try:
+            if not stats:
+                return ""
+            latest = stats.get('latest')
+            change_abs = stats.get('change_abs')
+            change_pct = stats.get('change_pct')
+            high = stats.get('high')
+            high_time = stats.get('high_time')
+            low = stats.get('low')
+            low_time = stats.get('low_time')
+            if latest is None or change_pct is None:
+                return ""
+            arrow = '↑' if change_pct > 0 else ('↓' if change_pct < 0 else '→')
+            def _fmt_price(value: Any) -> str:
+                try:
+                    return f"${float(value):,.2f}"
+                except (TypeError, ValueError):
+                    return 'n/a'
+            def _fmt_time(value: Any) -> str:
+                try:
+                    return datetime.fromtimestamp(int(value)/1000).strftime('%Y-%m-%d %H:%M')
+                except Exception:
+                    return 'n/a'
+            lines = [
+                f"{symbol} price ({window.upper()}) {arrow}",
+                f"- Latest: {_fmt_price(latest)} ({change_abs:+.2f}, {change_pct:+.2f}%)",
+            ]
+            if high is not None and low is not None:
+                lines.append(
+                    f"- Range: high {_fmt_price(high)} on {_fmt_time(high_time)}, low {_fmt_price(low)} on {_fmt_time(low_time)}"
+                )
+            lines.append("- See the price chart panel on the right for candles and volume.")
             return "\n".join(lines)
         except Exception:
             return ""

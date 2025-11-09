@@ -9,6 +9,12 @@ from ..tools.defillama import get_tvl_series, get_tvl_current
 from ..tools.polymarket import fetch_markets
 from ..providers.coingecko import CoingeckoProvider
 from ..services.trending import get_trending_tokens
+from ..services.token_chart import get_token_chart as fetch_token_chart
+from ..services.address import (
+    normalize_chain,
+    is_supported_chain,
+    is_valid_address_for_chain,
+)
 
 router = APIRouter(prefix="/tools")
 _logger = logging.getLogger(__name__)
@@ -20,13 +26,22 @@ async def get_portfolio_endpoint(
     chain: str = Query("ethereum", description="Blockchain network")
 ) -> PortfolioResponse:
     """Get portfolio data for a wallet address"""
-    
-    # Basic address validation
-    if not address.startswith("0x") or len(address) != 42:
-        raise HTTPException(status_code=400, detail="Invalid wallet address format")
-    
+
+    normalized_chain = normalize_chain(chain)
+    if not is_supported_chain(normalized_chain):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported chain '{chain}'",
+        )
+
+    if not is_valid_address_for_chain(address, normalized_chain):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid wallet address format for {normalized_chain}",
+        )
+
     try:
-        result = await get_portfolio(address, chain)
+        result = await get_portfolio(address, normalized_chain)
         
         if result.data is None:
             return PortfolioResponse(
@@ -123,3 +138,43 @@ async def get_trending_prices(
             extra={"event": "trending_tokens_error", "limit": limit, "error": str(exc)},
         )
         raise HTTPException(status_code=500, detail=f"Failed to fetch trending prices: {exc}")
+
+
+@router.get("/prices/token/chart")
+async def get_token_chart_endpoint(
+    coin_id: Optional[str] = Query(None, description="CoinGecko coin identifier (e.g. 'ethereum')"),
+    symbol: Optional[str] = Query(None, description="Token symbol (e.g. 'ETH')"),
+    contract_address: Optional[str] = Query(
+        None,
+        alias="address",
+        description="Token contract address for chain-specific lookup",
+        min_length=5,
+    ),
+    chain: str = Query("ethereum", description="Blockchain network for contract lookup"),
+    range_key: str = Query(
+        "7d",
+        alias="range",
+        description="Chart range window: 1d, 7d, 30d, 90d, 180d, 365d, or max",
+    ),
+    vs_currency: str = Query("usd", description="Quote currency (default: usd)"),
+    include_candles: bool = Query(True, description="Include OHLC candles when available"),
+):
+    try:
+        result = await fetch_token_chart(
+            coin_id=coin_id,
+            symbol=symbol,
+            contract_address=contract_address,
+            chain=chain,
+            range_key=range_key,
+            vs_currency=vs_currency,
+            include_candles=include_candles,
+        )
+        return {"success": True, **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - network errors unpredictable
+        raise HTTPException(status_code=500, detail=f"Failed to fetch token chart: {exc}") from exc

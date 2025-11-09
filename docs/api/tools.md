@@ -7,8 +7,8 @@ Utility endpoints under the `/tools` prefix supply portfolio data, DeFi metrics,
 Return enriched portfolio data for a wallet.
 
 - **Query parameters**:
-  - `address` (required): Checksummed wallet address (must be `0x` prefixed and 42 chars).
-  - `chain` (optional, default `ethereum`): Supported chain identifier.
+  - `address` (required): Wallet address for the requested chain. EVM wallets must be `0x` prefixed and 42 characters long; Solana wallets must be base58 strings (32–44 characters).
+  - `chain` (optional, default `ethereum`): Supported values `ethereum`, `solana`.
 - **Success response** (`200 OK`):
   ```json
   {
@@ -23,6 +23,7 @@ Return enriched portfolio data for a wallet.
     "sources": [{"provider": "alchemy"}, {"provider": "coingecko"}]
   }
   ```
+- Solana responses include Helius as the balance source (e.g. `{ "provider": "helius" }`).
 - **Errors**:
   - `400` for malformed addresses.
   - `500` if portfolio aggregation fails.

@@ -1,6 +1,6 @@
 # Agentic Wallet Python Backend - AI-Powered Chat System
 
-An intelligent cryptocurrency portfolio analysis system powered by Large Language Models (LLM). Features natural language conversations, multiple AI personas, and comprehensive portfolio insights for Ethereum addresses.
+An intelligent cryptocurrency portfolio analysis system powered by Large Language Models (LLM). Features natural language conversations, multiple AI personas, and comprehensive portfolio insights for Ethereum and Solana addresses.
 
 ## 🤖 What's New: AI-Powered Chat System
 
@@ -14,6 +14,7 @@ This system has been completely transformed from basic hardcoded responses to a 
 ## ✨ Key Features
 
 - **LLM-first agent** that keeps conversation context, swaps personas on demand, and blends tool outputs with natural language answers.
+- **Multi-chain aware** portfolio tooling with first-class support for Ethereum and Solana (Helius-backed) wallets.
 - **Portfolio intelligence** with on-chain balances, price feeds, and AI commentary in the same response payload.
 - **Market signals + perps simulator** delivering trending tokens, bridge-ready quotes, and risk-checked strategies without live trading.
 - **Developer-friendly tooling**: FastAPI endpoints, pluggable LLM providers, deterministic mocks, and a lean CLI/testing workflow.
@@ -37,6 +38,9 @@ ANTHROPIC_API_KEY=your_anthropic_key_here
 
 # Optional: Enhanced price data
 COINGECKO_API_KEY=your_coingecko_key_here
+
+# Optional: Solana balances (Helius)
+SOLANA_HELIUS_API_KEY=your_helius_key_here
 
 # Optional: LLM Configuration
 LLM_PROVIDER=anthropic
