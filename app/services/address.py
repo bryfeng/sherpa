@@ -18,12 +18,18 @@ _CHAIN_ALIASES = {
     "sol": "solana",
     "solana": "solana",
     "sui": "sui",
+    "matic": "polygon",
+    "polygon": "polygon",
+    "base-mainnet": "base",
+    "base": "base",
 }
 
 # Subset of chains we currently support for portfolio aggregation.
 _SUPPORTED_EVM_CHAINS = {
     "ethereum",
     "mainnet",
+    "polygon",
+    "base",
 }
 
 

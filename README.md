@@ -42,6 +42,10 @@ COINGECKO_API_KEY=your_coingecko_key_here
 # Optional: Solana balances (Helius)
 SOLANA_HELIUS_API_KEY=your_helius_key_here
 
+# Optional: History exports + caching
+AWS_S3_EXPORT_BUCKET=sherpa-history-exports
+REDIS_URL=redis://localhost:6379/0
+
 # Optional: LLM Configuration
 LLM_PROVIDER=anthropic
 LLM_MODEL=claude-3-5-sonnet-20241022
@@ -59,6 +63,10 @@ python cli.py chat
 
 # Test portfolio analysis  
 python cli.py portfolio 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+
+# Summarize wallet history (30-day window or latest 200 tx with --limit)
+python cli.py wallet-history 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 ethereum 30
+python cli.py wallet-history 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 ethereum --limit 200
 ```
 
 ### 4. Start API Server

@@ -8,9 +8,9 @@ persona management, and tool integration for intelligent portfolio analysis.
 import copy
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from statistics import mean, pstdev
-from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence, Tuple, Union
 import uuid
 
 import httpx
@@ -20,6 +20,7 @@ from ...providers.llm.base import LLMProvider, LLMMessage, LLMResponse
 from ...tools.portfolio import get_portfolio
 from ...services.trending import get_trending_tokens
 from ...services.token_chart import get_token_chart as fetch_token_chart
+from ...services.activity_summary import get_history_snapshot
 from ...types.requests import ChatRequest, ChatMessage
 from ...types.responses import ChatResponse
 from ..bridge import BridgeManager
@@ -287,6 +288,39 @@ class Agent:
                 self.logger.error('Trending token fetch error: %s', exc)
                 tool_data['trending_error'] = str(exc)
 
+        history_limit = self._extract_history_limit(request)
+        use_limit_mode = history_limit is not None and not self._mentions_time_window(request)
+
+        if self._needs_history_summary(request):
+            if not request.address:
+                tool_data['history_summary_error'] = 'Connect your wallet to ask about recent history.'
+            elif not wallet_address or wallet_address.lower() != request.address.lower():
+                tool_data['history_summary_error'] = 'Ask about the wallet that is currently connected before requesting history.'
+            else:
+                try:
+                    if use_limit_mode:
+                        snapshot, events = await get_history_snapshot(
+                            address=wallet_address,
+                            chain=request.chain,
+                            limit=history_limit,
+                        )
+                    else:
+                        window_start, window_end = self._extract_history_window(request)
+                        snapshot, events = await get_history_snapshot(
+                            address=wallet_address,
+                            chain=request.chain,
+                            start=window_start,
+                            end=window_end,
+                        )
+                    tool_data['history_summary'] = {
+                        'snapshot': snapshot,
+                        'events': events,
+                        'limit': history_limit if use_limit_mode else None,
+                    }
+                except Exception as exc:  # pragma: no cover - logging only
+                    self.logger.warning('History summary fetch error: %s', exc)
+                    tool_data['history_summary_error'] = str(exc)
+
         chart_request = self._extract_token_chart_request(request)
         if chart_request:
             try:
@@ -451,6 +485,19 @@ class Agent:
                 },
             }
             sources.extend(portfolio_sources)
+
+        if 'history_summary' in tool_data:
+            summary_info = tool_data['history_summary']
+            summary_payload = summary_info['snapshot']
+            panels['history_summary'] = {
+                'id': 'history-summary',
+                'kind': 'history-summary',
+                'title': 'Wallet Activity Summary',
+                'payload': summary_payload,
+                'sources': [{'name': summary_payload.get('chain', 'multichain')}],
+            }
+            if summary_info.get('limit'):
+                panels['history_summary']['metadata'] = {'sampleLimit': summary_info['limit']}
 
         if 'trending_tokens' in tool_data:
             trending_info = tool_data['trending_tokens']
@@ -710,6 +757,47 @@ class Agent:
 
         return any(trigger in last_message for trigger in triggers)
 
+    def _needs_history_summary(self, request: ChatRequest) -> bool:
+        if not request.messages:
+            return False
+        message = request.messages[-1].content.lower()
+        triggers = [
+            "history",
+            "transaction",
+            "activity",
+            "recent moves",
+            "recent transfers",
+            "summarize moves",
+            "compare this month",
+            "export",
+        ]
+        return any(trigger in message for trigger in triggers)
+
+    def _extract_history_window(self, request: ChatRequest) -> Tuple[datetime, datetime]:
+        now = datetime.now(timezone.utc)
+        message = request.messages[-1].content.lower() if request.messages else ""
+        days = 30
+        if "last week" in message or "7d" in message:
+            days = 7
+        elif "90" in message or "quarter" in message:
+            days = 90
+        elif "year" in message or "12 months" in message:
+            days = 180
+        else:
+            match = re.search(r"last\\s+(\\d{1,3})\\s*(day|week|month)", message)
+            if match:
+                value = int(match.group(1))
+                unit = match.group(2)
+                if unit.startswith("day"):
+                    days = value
+                elif unit.startswith("week"):
+                    days = value * 7
+                elif unit.startswith("month"):
+                    days = value * 30
+        days = max(7, min(days, 365))
+        start = now - timedelta(days=days)
+        return start, now
+
     def _extract_trending_query(self, request: ChatRequest) -> Optional[str]:
         """Extract a specific token symbol/name from a trending-related query."""
 
@@ -828,6 +916,23 @@ class Agent:
         if match:
             return match.group(0).lower()
         return None
+
+    def _extract_history_limit(self, request: ChatRequest) -> Optional[int]:
+        if not request.messages:
+            return None
+        message = request.messages[-1].content.lower()
+        pattern = re.search(r"(last|latest|past|previous)\s+(\d{1,4})\s+(tx|transaction|transactions|transfer|transfers)", message)
+        if pattern:
+            value = int(pattern.group(2))
+            return max(10, min(value, 2500))
+        return None
+
+    def _mentions_time_window(self, request: ChatRequest) -> bool:
+        if not request.messages:
+            return False
+        message = request.messages[-1].content.lower()
+        window_keywords = ["day", "days", "week", "weeks", "month", "months", "year", "years", "since", "past"]
+        return any(keyword in message for keyword in window_keywords)
 
     def _find_token_symbol(self, message: str) -> Optional[str]:
         symbol_matches = re.findall(r'\$([A-Za-z0-9]{2,10})', message)
@@ -1035,6 +1140,28 @@ class Agent:
                 formatted_parts.append(
                     f"Focus token {focus_name}: {focus_price}, 24h change {focus_change}, volume {focus_volume}"
                 )
+
+        if 'history_summary' in tool_data:
+            history_info = tool_data['history_summary']
+            summary = history_info['snapshot']
+            window = summary.get('timeWindow', {})
+            totals = summary.get('totals', {})
+            formatted_parts.append(
+                "Wallet history "
+                f"{window.get('start')} -> {window.get('end')}: "
+                f"inflow {_fmt_large(totals.get('inflowUsd'))}, "
+                f"outflow {_fmt_large(totals.get('outflowUsd'))}, "
+                f"fees {_fmt_large(totals.get('feeUsd'))}."
+            )
+            if history_info.get('limit'):
+                formatted_parts.append(
+                    f"Sample covers the latest {history_info['limit']} transfers."
+                )
+            for event in (summary.get('notableEvents') or [])[:3]:
+                formatted_parts.append(f"History flag ({event.get('severity')}): {event.get('summary')}")
+
+        if 'history_summary_error' in tool_data:
+            formatted_parts.append(f"History summary unavailable: {tool_data['history_summary_error']}")
 
         if 'token_chart' in tool_data:
             chart = tool_data['token_chart']

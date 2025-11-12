@@ -62,6 +62,18 @@ class Settings(BaseSettings):
         default="https://api.helius.xyz",
         description="Base URL for Solana balances API",
     )
+    redis_url: str = Field(
+        default="",
+        description="Redis connection string used for caching wallet history summaries",
+    )
+    aws_s3_export_bucket: str = Field(
+        default="",
+        description="Bucket name used for historical export artifacts",
+    )
+    aws_region: str = Field(
+        default="us-east-1",
+        description="AWS/minio region for export bucket",
+    )
 
     # Pro entitlement (token gating)
     pro_token_address: str = Field(

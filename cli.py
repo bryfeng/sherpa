@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Simple CLI for testing the Agentic Wallet locally"""
 
+import argparse
 import asyncio
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Optional
+
+import httpx
+
 from app.tools.portfolio import get_portfolio
 from app.core.chat import run_chat
 from app.types import ChatRequest, ChatMessage
+from app.services.address import normalize_chain
 
 
 def print_portfolio(portfolio_data, sources, cached=False):
@@ -125,45 +131,91 @@ async def cli_chat():
             print(f"❌ Error: {e}")
 
 
-def show_help():
-    """Show CLI help"""
-    print("Agentic Wallet CLI")
-    print("=" * 40)
-    print("Commands:")
-    print("  portfolio <address>  - Get portfolio for wallet address")
-    print("  chat                - Start interactive chat mode")
-    print("  help                - Show this help")
-    print("")
-    print("Examples:")
-    print("  python cli.py portfolio 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045")
-    print("  python cli.py chat")
+async def cli_wallet_history(address: str, chain: str = "ethereum", window_days: int = 30, limit: Optional[int] = None):
+    """Call the wallet history API and print a concise summary."""
+
+    base_url = "http://localhost:8000"
+    normalized_chain = normalize_chain(chain)
+    if limit is not None:
+        params = {"chain": normalized_chain, "limit": limit}
+        banner = f"latest {limit} transfers"
+    else:
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=window_days)
+        params = {
+            "chain": normalized_chain,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+        }
+        banner = f"{window_days}d window"
+
+    print(f"📜 Fetching history summary for {address} ({normalized_chain}, {banner})...")
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{base_url}/wallets/{address}/history-summary", params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+
+    totals = data.get("totals", {})
+    print(f"\nTimeframe: {data.get('timeWindow', {}).get('start')} → {data.get('timeWindow', {}).get('end')}")
+    print(f"Bucket size: {data.get('bucketSize')}")
+    print(f"Inflows:  {totals.get('inflowUsd', 0):,.2f} USD")
+    print(f"Outflows: {totals.get('outflowUsd', 0):,.2f} USD")
+    print(f"Fees:     {totals.get('feeUsd', 0):,.2f} USD")
+    if data.get("notableEvents"):
+        print("\nHighlights:")
+        for event in data["notableEvents"]:
+            print(f" - [{event.get('severity','info').upper()}] {event.get('summary')}")
+    if data.get("exportRefs"):
+        print("\nExports:")
+        for ref in data["exportRefs"]:
+            print(f" - {ref.get('format').upper()} ({ref.get('status')}): {ref.get('downloadUrl')}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Agentic Wallet CLI")
+    subparsers = parser.add_subparsers(dest="command")
+
+    portfolio_parser = subparsers.add_parser("portfolio", help="Get portfolio snapshot")
+    portfolio_parser.add_argument("address", help="Wallet address")
+
+    subparsers.add_parser("chat", help="Interactive chat mode")
+
+    history_parser = subparsers.add_parser("wallet-history", help="Fetch wallet history summary")
+    history_parser.add_argument("address", help="Wallet address")
+    history_parser.add_argument("chain", nargs="?", default="ethereum", help="Chain (default: ethereum)")
+    history_parser.add_argument("window_days", nargs="?", type=int, default=30, help="Window in days if limit not provided")
+    history_parser.add_argument("--limit", type=int, help="Fetch the latest N transactions instead of a time window")
+
+    return parser
 
 
 async def main():
-    """Main CLI entry point"""
-    if len(sys.argv) < 2:
-        show_help()
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
         return
     
-    command = sys.argv[1].lower()
+    command = args.command.lower()
     
     if command == "portfolio":
-        if len(sys.argv) < 3:
-            print("❌ Please provide a wallet address")
-            print("Usage: python cli.py portfolio <address>")
-            return
-        address = sys.argv[2]
-        await cli_portfolio(address)
+        await cli_portfolio(args.address)
         
     elif command == "chat":
         await cli_chat()
-        
+
+    elif command == "wallet-history":
+        if args.limit is not None and args.limit <= 0:
+            raise ValueError("Limit must be positive")
+        await cli_wallet_history(args.address, args.chain, args.window_days, args.limit)
+
     elif command in ["help", "-h", "--help"]:
-        show_help()
-        
+        parser.print_help()
+
     else:
         print(f"❌ Unknown command: {command}")
-        show_help()
+        parser.print_help()
 
 
 if __name__ == "__main__":
