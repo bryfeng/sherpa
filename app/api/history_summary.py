@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-from typing import List, Literal, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, List, Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from ..config import settings
 from ..services.activity_summary import get_history_snapshot
 from ..services.history_comparison import generate_comparison_report
 from ..services.address import is_valid_address_for_chain, normalize_chain
@@ -41,7 +42,7 @@ async def get_wallet_history_summary(
     chain: str = Query(default="ethereum"),
     start: Optional[datetime] = Query(default=None),
     end: Optional[datetime] = Query(default=None),
-    windowDays: int = Query(default=30, ge=1, le=365),
+    windowDays: Optional[int] = Query(default=None, ge=1, le=365),
     limit: Optional[int] = Query(default=None, ge=1, le=2500),
 ):
     normalized_chain = normalize_chain(chain)
@@ -49,18 +50,43 @@ async def get_wallet_history_summary(
         raise HTTPException(status_code=400, detail="Invalid address for chain")
 
     snapshot: dict
-    if limit is not None:
-        snapshot, _ = await get_history_snapshot(address=address, chain=normalized_chain, limit=limit)
+    metadata_overrides: dict[str, Any] = {}
+    requested_window: Optional[tuple[datetime, datetime]] = None
+    effective_limit = limit
+    if effective_limit is None and start is None and end is None and windowDays is None:
+        effective_limit = settings.history_summary_default_limit
+
+    if effective_limit is not None:
+        snapshot, _ = await get_history_snapshot(address=address, chain=normalized_chain, limit=effective_limit)
     else:
         if not start or not end:
             end = datetime.utcnow()
-            start = end - timedelta(days=windowDays)
+            window_span = windowDays or 30
+            start = end - timedelta(days=window_span)
+        requested_window = (start, end)
 
         max_window = timedelta(days=90)
-        if end - start > max_window:
-            start = end - max_window
+        applied_start = start
+        applied_end = end
+        requested_span = _span_days(start, end)
+        metadata_overrides["requestedWindowDays"] = requested_span
+        if applied_end - applied_start > max_window:
+            metadata_overrides["windowClamped"] = True
+            metadata_overrides["clampedWindowDays"] = max_window.days
+            applied_start = applied_end - max_window
+        metadata_overrides["syncWindowDays"] = _span_days(applied_start, applied_end)
 
-        snapshot, _ = await get_history_snapshot(address=address, chain=normalized_chain, start=start, end=end)
+        snapshot, _ = await get_history_snapshot(address=address, chain=normalized_chain, start=applied_start, end=applied_end)
+    if requested_window:
+        metadata_overrides.setdefault(
+            "requestedWindow",
+            {
+                "start": _isoformat_utc(requested_window[0]),
+                "end": _isoformat_utc(requested_window[1]),
+            },
+        )
+    if metadata_overrides:
+        snapshot.setdefault("metadata", {}).update(metadata_overrides)
     exports = await export_worker.list_exports_for_address(address)
     snapshot["exportRefs"] = [export_worker.serialize_metadata(meta) for meta in exports]
     return snapshot
@@ -127,3 +153,20 @@ async def compare_history_summary(address: str, payload: ComparisonRequest):
         metrics=payload.metrics,
     )
     return report
+
+
+def _isoformat_utc(value: datetime) -> str:
+    target = value
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=timezone.utc)
+    else:
+        target = target.astimezone(timezone.utc)
+    return target.isoformat()
+
+
+def _span_days(start: datetime, end: datetime) -> int:
+    span = end - start
+    days = span.days
+    if span.seconds or span.microseconds:
+        days += 1
+    return max(1, days)

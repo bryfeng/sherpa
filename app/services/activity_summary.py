@@ -54,28 +54,30 @@ async def get_history_snapshot(
     start_time = datetime.now()
     events = await fetch_activity_with_fallbacks(address, chain, start=start, end=end, limit=limit)
     events_payload = await _enrich_events(events)
-    bucket_size = _resolve_bucket_size(start, end)
-    buckets = _bucketize(events_payload, start, end, bucket_size)
-    totals = _compute_totals(events_payload)
-    notable = _detect_notable_events(events_payload, totals)
 
     if limit is not None:
         if events_payload:
             timestamps = [datetime.fromisoformat(ev["timestamp"]) for ev in events_payload]
-            window_start = min(timestamps).replace(tzinfo=timezone.utc)
-            window_end = max(timestamps).replace(tzinfo=timezone.utc)
+            effective_start = min(timestamps).replace(tzinfo=timezone.utc)
+            effective_end = max(timestamps).replace(tzinfo=timezone.utc)
         else:
-            window_start = window_end = datetime.now(timezone.utc)
+            effective_end = datetime.now(timezone.utc)
+            effective_start = effective_end
     else:
-        window_start = start.replace(tzinfo=timezone.utc)  # type: ignore[arg-type]
-        window_end = end.replace(tzinfo=timezone.utc)  # type: ignore[arg-type]
+        effective_start = start.replace(tzinfo=timezone.utc)  # type: ignore[arg-type]
+        effective_end = end.replace(tzinfo=timezone.utc)  # type: ignore[arg-type]
+
+    bucket_size = _resolve_bucket_size(effective_start, effective_end)
+    buckets = _bucketize(events_payload, effective_start, effective_end, bucket_size)
+    totals = _compute_totals(events_payload)
+    notable = _detect_notable_events(events_payload, totals)
 
     snapshot = {
         "walletAddress": address,
         "chain": chain,
         "timeWindow": {
-            "start": window_start.isoformat(),
-            "end": window_end.isoformat(),
+            "start": effective_start.isoformat(),
+            "end": effective_end.isoformat(),
         },
         "bucketSize": bucket_size,
         "totals": totals,
@@ -348,12 +350,13 @@ def _detect_notable_events(events: list[dict], totals: dict) -> list[dict]:
                 }
             )
 
-    timeline = sorted((datetime.fromisoformat(ev["timestamp"]), ev) for ev in events)
+    timeline = sorted(events, key=lambda ev: ev["timestamp"])
     if len(timeline) >= 2:
-        gaps = [
-            (timeline[idx][0] - timeline[idx - 1][0], timeline[idx - 1][0])
-            for idx in range(1, len(timeline))
-        ]
+        gaps = []
+        for idx in range(1, len(timeline)):
+            current_ts = datetime.fromisoformat(timeline[idx]["timestamp"])
+            prev_ts = datetime.fromisoformat(timeline[idx - 1]["timestamp"])
+            gaps.append((current_ts - prev_ts, prev_ts))
         if gaps:
             max_gap, gap_start = max(gaps, key=lambda item: item[0])
             if max_gap >= timedelta(days=21):

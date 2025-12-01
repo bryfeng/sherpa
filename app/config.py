@@ -157,6 +157,12 @@ class Settings(BaseSettings):
         },
         description="Provider models metadata surfaced to clients",
     )
+    history_summary_default_limit: int = Field(
+        default=250,
+        ge=10,
+        le=2500,
+        description="Default number of transactions to include when no explicit window is provided",
+    )
 
     @property
     def has_alchemy_key(self) -> bool:
@@ -214,6 +220,26 @@ class Settings(BaseSettings):
                 if option_id and option_id.lower() == target:
                     return provider
         return None
+
+    # Agent Runtime
+    agent_runtime_enabled: bool = Field(
+        default=True,
+        description="Start the background agent runtime alongside FastAPI",
+    )
+    agent_runtime_default_interval_seconds: int = Field(
+        default=60,
+        description="Default tick interval for background strategies",
+    )
+    agent_runtime_max_concurrency: int = Field(
+        default=4,
+        ge=1,
+        description="Maximum concurrent strategy tasks",
+    )
+    agent_runtime_tick_timeout_seconds: int = Field(
+        default=20,
+        ge=1,
+        description="Max seconds to allow a strategy tick to run before timing out",
+    )
 
 
 # Global settings instance

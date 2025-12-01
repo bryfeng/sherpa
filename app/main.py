@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary
 from .api import relay as relay_api
+from .agent_runtime.router import router as runtime_router
+from .agent_runtime import get_runtime, register_builtin_strategies
 from .config import settings
 
 # Create FastAPI app
@@ -33,6 +35,7 @@ app.include_router(entitlement.router, tags=["Entitlement"])
 app.include_router(perps.router, tags=["Perps"])
 app.include_router(llm.router, tags=["LLM"])
 app.include_router(history_summary.router, tags=["History"])
+app.include_router(runtime_router, tags=["Runtime"])
 
 
 @app.get("/")
@@ -45,6 +48,21 @@ async def root():
         "docs": "/docs",
         "health": "/healthz"
     }
+
+
+@app.on_event("startup")
+async def _start_runtime() -> None:
+    if not settings.agent_runtime_enabled:
+        return
+    register_builtin_strategies()
+    await get_runtime().ensure_started()
+
+
+@app.on_event("shutdown")
+async def _stop_runtime() -> None:
+    runtime = get_runtime()
+    if runtime.is_running:
+        await runtime.stop()
 
 
 if __name__ == "__main__":

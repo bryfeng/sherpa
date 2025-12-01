@@ -8,6 +8,7 @@ persona management, and tool integration for intelligent portfolio analysis.
 import copy
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from statistics import mean, pstdev
 from typing import Any, AsyncGenerator, Dict, List, Optional, Sequence, Tuple, Union
@@ -16,6 +17,7 @@ import uuid
 import httpx
 from pydantic import BaseModel, Field
 
+from ...config import settings
 from ...providers.llm.base import LLMProvider, LLMMessage, LLMResponse
 from ...tools.portfolio import get_portfolio
 from ...services.trending import get_trending_tokens
@@ -27,6 +29,10 @@ from ..bridge import BridgeManager
 from ..swap import SwapManager
 from .styles import StyleManager, ResponseStyle
 from .graph import build_agent_process_graph
+
+
+HISTORY_SYNC_DAY_CAP = 90
+DEFAULT_HISTORY_LIMIT = settings.history_summary_default_limit
 
 
 class AgentResponse(BaseModel):
@@ -42,6 +48,20 @@ class AgentResponse(BaseModel):
     conversation_id: Optional[str] = Field(default=None, description="Conversation identifier")
     tokens_used: Optional[int] = Field(default=None, description="Total tokens consumed")
     processing_time_ms: Optional[float] = Field(default=None, description="Response processing time")
+
+
+@dataclass
+class HistoryWindowContext:
+    start: datetime
+    end: datetime
+    requested_start: datetime
+    requested_end: datetime
+    requested_days: int
+    applied_days: int
+
+    @property
+    def clamped(self) -> bool:
+        return self.applied_days < self.requested_days
 
 
 class ToolRequest(BaseModel):
@@ -288,8 +308,10 @@ class Agent:
                 self.logger.error('Trending token fetch error: %s', exc)
                 tool_data['trending_error'] = str(exc)
 
-        history_limit = self._extract_history_limit(request)
-        use_limit_mode = history_limit is not None and not self._mentions_time_window(request)
+        requested_limit = self._extract_history_limit(request)
+        mentions_window = self._mentions_time_window(request)
+        effective_limit = requested_limit if requested_limit is not None else (DEFAULT_HISTORY_LIMIT if not mentions_window else None)
+        use_limit_mode = effective_limit is not None
 
         if self._needs_history_summary(request):
             if not request.address:
@@ -297,25 +319,27 @@ class Agent:
             elif not wallet_address or wallet_address.lower() != request.address.lower():
                 tool_data['history_summary_error'] = 'Ask about the wallet that is currently connected before requesting history.'
             else:
+                window_context: Optional[HistoryWindowContext] = None
                 try:
                     if use_limit_mode:
                         snapshot, events = await get_history_snapshot(
                             address=wallet_address,
                             chain=request.chain,
-                            limit=history_limit,
+                            limit=effective_limit,
                         )
                     else:
-                        window_start, window_end = self._extract_history_window(request)
+                        window_context = self._extract_history_window(request)
                         snapshot, events = await get_history_snapshot(
                             address=wallet_address,
                             chain=request.chain,
-                            start=window_start,
-                            end=window_end,
+                            start=window_context.start,
+                            end=window_context.end,
                         )
+                        self._apply_history_window_metadata(snapshot, window_context)
                     tool_data['history_summary'] = {
                         'snapshot': snapshot,
                         'events': events,
-                        'limit': history_limit if use_limit_mode else None,
+                        'limit': effective_limit if use_limit_mode else None,
                     }
                 except Exception as exc:  # pragma: no cover - logging only
                     self.logger.warning('History summary fetch error: %s', exc)
@@ -489,6 +513,11 @@ class Agent:
         if 'history_summary' in tool_data:
             summary_info = tool_data['history_summary']
             summary_payload = summary_info['snapshot']
+            metadata: Dict[str, Any] = {}
+            existing_metadata = summary_info.get('metadata')
+            if isinstance(existing_metadata, dict):
+                metadata.update(existing_metadata)
+            metadata.setdefault('density', 'full')
             panels['history_summary'] = {
                 'id': 'history-summary',
                 'kind': 'history-summary',
@@ -497,7 +526,9 @@ class Agent:
                 'sources': [{'name': summary_payload.get('chain', 'multichain')}],
             }
             if summary_info.get('limit'):
-                panels['history_summary']['metadata'] = {'sampleLimit': summary_info['limit']}
+                metadata['sampleLimit'] = summary_info['limit']
+            if metadata:
+                panels['history_summary']['metadata'] = metadata
 
         if 'trending_tokens' in tool_data:
             trending_info = tool_data['trending_tokens']
@@ -773,7 +804,22 @@ class Agent:
         ]
         return any(trigger in message for trigger in triggers)
 
-    def _extract_history_window(self, request: ChatRequest) -> Tuple[datetime, datetime]:
+    def _apply_history_window_metadata(self, snapshot: Dict[str, Any], window: HistoryWindowContext) -> None:
+        metadata = snapshot.setdefault('metadata', {})
+        metadata.setdefault(
+            'requestedWindow',
+            {
+                'start': window.requested_start.isoformat(),
+                'end': window.requested_end.isoformat(),
+            },
+        )
+        metadata.setdefault('requestedWindowDays', window.requested_days)
+        metadata['syncWindowDays'] = window.applied_days
+        if window.clamped:
+            metadata['windowClamped'] = True
+            metadata['clampedWindowDays'] = window.applied_days
+
+    def _extract_history_window(self, request: ChatRequest) -> HistoryWindowContext:
         now = datetime.now(timezone.utc)
         message = request.messages[-1].content.lower() if request.messages else ""
         days = 30
@@ -784,7 +830,7 @@ class Agent:
         elif "year" in message or "12 months" in message:
             days = 180
         else:
-            match = re.search(r"last\\s+(\\d{1,3})\\s*(day|week|month)", message)
+            match = re.search(r"last\s+(\d{1,3})\s*(day|week|month)", message)
             if match:
                 value = int(match.group(1))
                 unit = match.group(2)
@@ -794,9 +840,18 @@ class Agent:
                     days = value * 7
                 elif unit.startswith("month"):
                     days = value * 30
-        days = max(7, min(days, 365))
-        start = now - timedelta(days=days)
-        return start, now
+        requested_days = max(7, min(days, 365))
+        applied_days = max(7, min(requested_days, HISTORY_SYNC_DAY_CAP))
+        requested_start = now - timedelta(days=requested_days)
+        applied_start = now - timedelta(days=applied_days)
+        return HistoryWindowContext(
+            start=applied_start,
+            end=now,
+            requested_start=requested_start,
+            requested_end=now,
+            requested_days=requested_days,
+            applied_days=applied_days,
+        )
 
     def _extract_trending_query(self, request: ChatRequest) -> Optional[str]:
         """Extract a specific token symbol/name from a trending-related query."""
@@ -1146,17 +1201,30 @@ class Agent:
             summary = history_info['snapshot']
             window = summary.get('timeWindow', {})
             totals = summary.get('totals', {})
-            formatted_parts.append(
-                "Wallet history "
-                f"{window.get('start')} -> {window.get('end')}: "
-                f"inflow {_fmt_large(totals.get('inflowUsd'))}, "
-                f"outflow {_fmt_large(totals.get('outflowUsd'))}, "
-                f"fees {_fmt_large(totals.get('feeUsd'))}."
-            )
-            if history_info.get('limit'):
+            metadata = summary.get('metadata') or {}
+            limit_sample = history_info.get('limit')
+            if limit_sample:
                 formatted_parts.append(
-                    f"Sample covers the latest {history_info['limit']} transfers."
+                    f"Latest {limit_sample} transfers: "
+                    f"inflow {_fmt_large(totals.get('inflowUsd'))}, "
+                    f"outflow {_fmt_large(totals.get('outflowUsd'))}, "
+                    f"fees {_fmt_large(totals.get('feeUsd'))}."
                 )
+            else:
+                formatted_parts.append(
+                    "Wallet history "
+                    f"{window.get('start')} -> {window.get('end')}: "
+                    f"inflow {_fmt_large(totals.get('inflowUsd'))}, "
+                    f"outflow {_fmt_large(totals.get('outflowUsd'))}, "
+                    f"fees {_fmt_large(totals.get('feeUsd'))}."
+                )
+                if metadata.get('windowClamped'):
+                    requested_window = _format_requested_window(metadata.get('requestedWindow'))
+                    clamp_days = metadata.get('clampedWindowDays') or HISTORY_SYNC_DAY_CAP
+                    formatted_parts.append(
+                        f"Requested window {requested_window} exceeds the live cap, so I'm showing the most recent {clamp_days} days. "
+                        "Ask for an export if you need the full range."
+                    )
             for event in (summary.get('notableEvents') or [])[:3]:
                 formatted_parts.append(f"History flag ({event.get('severity')}): {event.get('summary')}")
 
@@ -1444,3 +1512,24 @@ class Agent:
             llm_provider=self.provider_id,
             llm_model=self.model_id or getattr(self.llm_provider, "model", None),
         )
+
+
+def _format_requested_window(window: Optional[Dict[str, Any]]) -> str:
+    if not window or not isinstance(window, dict):
+        return "the requested range"
+    start_label = _fmt_iso_day(window.get('start'))
+    end_label = _fmt_iso_day(window.get('end'))
+    if start_label and end_label:
+        return f"{start_label} -> {end_label}"
+    return "the requested range"
+
+
+def _fmt_iso_day(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        return parsed.strftime("%Y-%m-%d")
+    except ValueError:
+        return value

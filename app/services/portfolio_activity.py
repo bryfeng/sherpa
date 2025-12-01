@@ -47,7 +47,7 @@ async def fetch_activity(
 ) -> list[ActivityEvent]:
     """Fetch normalized wallet activity for the requested chain."""
 
-    effective_limit = limit if limit is not None else 100
+    effective_limit = limit if limit is not None else 10
 
     normalized_chain = normalize_chain(chain)
 
@@ -83,7 +83,6 @@ async def _fetch_evm_activity(
         "params": [
             {
                 "fromAddress": address,
-                "toAddress": address,
                 "category": ["external", "erc20", "erc721", "erc1155"],
                 "withMetadata": True,
                 "order": "desc",
