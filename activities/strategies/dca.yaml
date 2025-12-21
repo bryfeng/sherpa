@@ -1,0 +1,74 @@
+name: dca
+display_name: "Dollar Cost Averaging"
+category: "accumulation"
+version: "1.0"
+extends: swap
+
+description: |
+  Periodically swap a fixed amount of a source token into one or more
+  target tokens. Classic DCA strategy for long-term accumulation.
+
+strategy_config:
+  schedule:
+    type: cron
+    default: "0 9 * * 1"  # Every Monday at 9 AM UTC
+    description: "When to execute DCA swaps"
+
+  parameters:
+    source_token:
+      type: token_reference
+      default_symbol: "USDC"
+      description: "Token to spend (typically a stablecoin)"
+
+    target_tokens:
+      type: token_list
+      required: true
+      min_items: 1
+      max_items: 10
+      description: "Tokens to accumulate"
+
+    amount_per_execution:
+      type: amount
+      amount_type: usd
+      required: true
+      min: 10
+      max: 10000
+      description: "Total USD amount per execution"
+
+    allocation:
+      type: weight_map
+      required: true
+      sum_to: 1.0
+      description: "Allocation weights (must sum to 1.0)"
+      example:
+        ETH: 0.5
+        BTC: 0.3
+        SOL: 0.2
+
+conditions:
+  pre_execution:
+    - type: balance_check
+      description: "Ensure sufficient source token balance"
+      action_on_fail: skip_with_notification
+
+    - type: price_deviation_check
+      max_deviation_pct: 10.0
+      description: "Skip if price moved significantly since last check"
+      action_on_fail: skip_with_notification
+
+guardrails:
+  inherit: true
+  overrides:
+    max_slippage_bps: 50
+    require_approval_above_usd: 1000.0
+
+outputs:
+  per_execution:
+    - tokens_bought: "Map of token symbol to amount received"
+    - average_price: "Average price per token"
+    - total_spent_usd: "Total USD value spent"
+
+  cumulative:
+    - total_accumulated: "Total tokens accumulated over time"
+    - average_cost_basis: "Average cost basis per token"
+    - total_invested_usd: "Total USD invested"

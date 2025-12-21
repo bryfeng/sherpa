@@ -190,7 +190,7 @@ system_prompt: |
 
 ### 3. Test Your Changes
 ```bash
-cd agentic_wallet_py
+cd sherpa
 python test_agent_system.py
 ```
 
@@ -261,10 +261,10 @@ system_prompt: |
 ## File Locations
 
 ```
-agentic_wallet_py/
+sherpa/
 ├── personas/           # Persona configuration files
 │   ├── friendly.yaml
-│   ├── technical.yaml  
+│   ├── technical.yaml
 │   ├── professional.yaml
 │   └── educational.yaml
 ├── app/core/agent/

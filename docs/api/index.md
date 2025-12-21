@@ -15,12 +15,23 @@ Welcome to the dedicated API reference for the Agentic Wallet backend. The servi
 | [Conversations](conversations.md) | Conversation lifecycle management helpers. |
 | [Tools](tools.md) | Portfolio, TVL, market, and price utilities under `/tools`. |
 | [Relay](relay.md) | Relay bridge quoting helpers under `/tools/relay`. |
-| [Swap](swap.md) | Simple swap quote estimator under `/swap`. |
+| [Swap](swap.md) | Swap quotes via Relay aggregator under `/swap`. |
 | [Perps](perps.md) | Read-only perpetuals simulator under `/perps`. |
 | [Entitlement](entitlement.md) | Wallet entitlement checks. |
 | [LLM](llm.md) | LLM provider catalogue surfaced to the frontend. |
 
 Each page documents request parameters, example payloads, and response structures pulled directly from the FastAPI routers.
+
+## Internal Services (Not API Routes)
+
+These services are used internally by the agent system:
+
+| Service | Description | Documentation |
+| --- | --- | --- |
+| Token Resolution | Multi-chain token lookup with confidence scoring | `app/services/token_resolution.py` |
+| Activity Planning | Autonomous agent planning system | [PLANNING_SYSTEM.md](../PLANNING_SYSTEM.md) |
+| Bridge Manager | Cross-chain bridge orchestration | `app/core/bridge/manager.py` |
+| Swap Manager | Swap intent parsing and execution | `app/core/swap/manager.py` |
 
 ## Error Handling
 

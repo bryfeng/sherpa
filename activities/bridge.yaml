@@ -1,0 +1,56 @@
+name: bridge
+display_name: "Cross-Chain Bridge"
+category: "transfer"
+version: "1.0"
+
+description: |
+  Bridge tokens between different chains. Supports EVM-to-EVM and
+  EVM-to-Solana transfers via Relay.
+
+inputs:
+  token:
+    type: token_reference
+    required: true
+    description: "Token to bridge"
+  amount:
+    type: amount
+    required: true
+    description: "Amount to bridge"
+  source_chain:
+    type: chain_reference
+    required: true
+    description: "Chain to bridge from"
+  destination_chain:
+    type: chain_reference
+    required: true
+    description: "Chain to bridge to"
+  destination_token:
+    type: token_reference
+    required: false
+    default: null
+    description: "Token to receive (defaults to same token on destination)"
+
+guardrails:
+  max_slippage_bps: 100
+  require_approval_above_usd: 5000.0
+  allowed_chains:
+    - 1        # Ethereum
+    - 8453     # Base
+    - 42161    # Arbitrum
+    - 10       # Optimism
+    - 137      # Polygon
+    - solana   # Solana
+
+execution:
+  provider: relay
+  quote_expiry_seconds: 120
+  retry_on_failure: true
+  max_retries: 2
+
+detection_keywords:
+  - bridge
+  - bridging
+  - move to
+  - send to
+  - transfer to
+  - port to

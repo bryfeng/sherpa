@@ -181,6 +181,22 @@ The system uses a sophisticated multi-layer architecture:
 - **Maintains full API compatibility** with existing frontend systems
 - **Structured response format**: `{reply, panels, sources}` for rich UIs
 
+#### 📋 **Activity Planning System** (`app/core/planning/`)
+- **Hybrid architecture**: YAML schemas + Python strategies + JSON-serializable config
+- **`protocol.py`**: `BaseStrategy` Protocol, `TradeIntent`, `AmountSpec` for strategy abstraction
+- **`models.py`**: `Plan`, `Action`, `PolicyConstraints` for execution management
+- **`config.py`**: `AgentConfig`, `DCAStrategyParams` - ERC-7208 ready for onchain storage
+- **`service.py`**: `PlanningService` orchestrates plan creation from chat or autonomous strategies
+- **`registry.py`**: `ActivityRegistry` loads YAML definitions from `activities/`
+- **`strategies/dca.py`**: Dollar Cost Averaging implementation
+- **Full documentation**: See `docs/PLANNING_SYSTEM.md` for architecture details and extension guide
+
+#### 🗂️ **YAML Activity Definitions** (`activities/`)
+- **`swap.yaml`**: Swap activity schema with guardrails
+- **`bridge.yaml`**: Cross-chain bridge activity
+- **`strategies/dca.yaml`**: DCA strategy template with schedule and allocation config
+- **Extensible**: Add new activities by creating YAML files - automatically loaded at startup
+
 ## 📡 API Endpoints
 
 ### Core Endpoints
