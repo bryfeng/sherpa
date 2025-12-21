@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from ..core.bridge.constants import CHAIN_ALIAS_TO_ID, DEFAULT_CHAIN_NAME_TO_ID
+from ..core.chain_types import ChainId, is_solana_chain
 from ..core.swap.constants import SWAP_SOURCE, TOKEN_ALIAS_MAP, TOKEN_REGISTRY
 from ..providers.relay import RelayProvider
 
@@ -136,16 +137,43 @@ async def quote_swap_simple(
 
 
 def _resolve_chain_id(chain: Optional[str]) -> int:
+    """
+    Resolve chain string to an integer chain ID.
+
+    Note: This function only supports EVM chains. Solana swaps are not
+    supported by the Relay aggregator and will raise an error.
+    """
     if chain is None:
         return 1
     chain_str = str(chain).strip()
     if not chain_str:
         return 1
     lower = chain_str.lower()
+
+    # Check for Solana - not supported for swaps via Relay
+    if lower in ("sol", "solana"):
+        raise ValueError(
+            "Solana swaps are not yet supported via Relay. "
+            "Use Jupiter (https://jup.ag) for Solana swaps."
+        )
+
     if lower in CHAIN_ALIAS_TO_ID:
-        return CHAIN_ALIAS_TO_ID[lower]
+        chain_id = CHAIN_ALIAS_TO_ID[lower]
+        # Guard against non-EVM chains that might be in the alias map
+        if is_solana_chain(chain_id):
+            raise ValueError(
+                "Solana swaps are not yet supported via Relay. "
+                "Use Jupiter (https://jup.ag) for Solana swaps."
+            )
+        return chain_id
     if lower in DEFAULT_CHAIN_NAME_TO_ID:
-        return DEFAULT_CHAIN_NAME_TO_ID[lower]
+        chain_id = DEFAULT_CHAIN_NAME_TO_ID[lower]
+        if is_solana_chain(chain_id):
+            raise ValueError(
+                "Solana swaps are not yet supported via Relay. "
+                "Use Jupiter (https://jup.ag) for Solana swaps."
+            )
+        return chain_id
     try:
         return int(chain_str, 10)
     except ValueError:

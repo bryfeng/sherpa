@@ -62,6 +62,16 @@ class Settings(BaseSettings):
         default="https://api.helius.xyz",
         description="Base URL for Solana balances API",
     )
+
+    # Jupiter Provider (Solana token list and prices)
+    enable_jupiter: bool = Field(
+        default=True,
+        description="Enable Jupiter provider for Solana token lookups",
+    )
+    jupiter_cache_ttl_seconds: int = Field(
+        default=3600,
+        description="TTL for Jupiter token list cache (default: 1 hour)",
+    )
     redis_url: str = Field(
         default="",
         description="Redis connection string used for caching wallet history summaries",

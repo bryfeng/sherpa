@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..core.chain_types import ChainId
 
 _BASE58_ALPHABET = set("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz")
 _HEX_ALPHABET = set("0123456789abcdefABCDEF")
@@ -88,6 +92,42 @@ def is_valid_address_for_chain(address: str, chain: str) -> bool:
     return bool(_EVM_ADDRESS_RE.fullmatch(address))
 
 
+def chain_id_from_slug(slug: str) -> "ChainId":
+    """
+    Convert a normalized chain slug to a ChainId.
+
+    This is a convenience wrapper around normalize_to_chain_id for use with
+    already-normalized slugs from normalize_chain().
+
+    Args:
+        slug: Normalized chain slug (e.g., "ethereum", "solana", "polygon").
+
+    Returns:
+        ChainId (int for EVM chains, "solana" for Solana).
+    """
+    from ..core.chain_types import SOLANA_CHAIN_ID
+
+    if slug == "solana":
+        return SOLANA_CHAIN_ID
+
+    # Map normalized slugs to EVM chain IDs
+    _SLUG_TO_CHAIN_ID = {
+        "ethereum": 1,
+        "mainnet": 1,
+        "polygon": 137,
+        "base": 8453,
+        "arbitrum": 42161,
+        "optimism": 10,
+    }
+
+    chain_id = _SLUG_TO_CHAIN_ID.get(slug)
+    if chain_id is not None:
+        return chain_id
+
+    # Default to Ethereum for unknown slugs
+    return 1
+
+
 __all__ = [
     "normalize_chain",
     "is_supported_chain",
@@ -95,4 +135,5 @@ __all__ = [
     "is_valid_address_for_chain",
     "is_valid_solana_address",
     "is_valid_sui_address",
+    "chain_id_from_slug",
 ]
