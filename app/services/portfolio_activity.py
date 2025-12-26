@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -76,27 +77,51 @@ async def _fetch_evm_activity(
         logger.warning("Alchemy endpoint not known for chain %s", chain)
         return []
 
-    payload = {
+    # Fetch both outgoing (fromAddress) and incoming (toAddress) transfers
+    base_params = {
+        "category": ["external", "erc20", "erc721", "erc1155"],
+        "withMetadata": True,
+        "order": "desc",
+        "maxCount": hex(max(1, min(limit, 0x3e8))),
+    }
+
+    outgoing_payload = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "alchemy_getAssetTransfers",
-        "params": [
-            {
-                "fromAddress": address,
-                "category": ["external", "erc20", "erc721", "erc1155"],
-                "withMetadata": True,
-                "order": "desc",
-                "maxCount": hex(max(1, min(limit, 0x3e8))),
-            }
-        ],
+        "params": [{**base_params, "fromAddress": address}],
+    }
+
+    incoming_payload = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "alchemy_getAssetTransfers",
+        "params": [{**base_params, "toAddress": address}],
     }
 
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(base_url, json=payload)
-        response.raise_for_status()
-        data = response.json()
+        outgoing_resp, incoming_resp = await asyncio.gather(
+            client.post(base_url, json=outgoing_payload),
+            client.post(base_url, json=incoming_payload),
+        )
+        outgoing_resp.raise_for_status()
+        incoming_resp.raise_for_status()
+        outgoing_data = outgoing_resp.json()
+        incoming_data = incoming_resp.json()
 
-    transfers = data.get("result", {}).get("transfers", [])
+    # Merge transfers and deduplicate by tx hash
+    outgoing_transfers = outgoing_data.get("result", {}).get("transfers", [])
+    incoming_transfers = incoming_data.get("result", {}).get("transfers", [])
+
+    seen_hashes: set[str] = set()
+    transfers: list[dict] = []
+    for transfer in outgoing_transfers + incoming_transfers:
+        tx_hash = transfer.get("hash") or transfer.get("uniqueId") or ""
+        if tx_hash and tx_hash in seen_hashes:
+            continue
+        seen_hashes.add(tx_hash)
+        transfers.append(transfer)
+
     results: list[ActivityEvent] = []
     lower_address = address.lower()
     for transfer in transfers:

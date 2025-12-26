@@ -85,6 +85,20 @@ class Settings(BaseSettings):
         description="AWS/minio region for export bucket",
     )
 
+    # Convex Database
+    convex_url: str = Field(
+        default="",
+        description="Convex deployment URL (e.g., https://your-deployment.convex.cloud)",
+    )
+    convex_deploy_key: str = Field(
+        default="",
+        description="Convex deploy key for server-side mutations",
+    )
+    convex_internal_api_key: str = Field(
+        default="",
+        description="Internal API key for Convex HTTP actions",
+    )
+
     # Pro entitlement (token gating)
     pro_token_address: str = Field(
         default="",
@@ -193,6 +207,11 @@ class Settings(BaseSettings):
     @property
     def has_zai_key(self) -> bool:
         return bool(self.z_api_key)
+
+    @property
+    def has_convex(self) -> bool:
+        """Check if Convex is configured."""
+        return bool(self.convex_url)
 
     @property
     def has_llm_key(self) -> bool:
