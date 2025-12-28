@@ -25,47 +25,66 @@ class StyleManager:
         self.style_prompts = {
             ResponseStyle.CASUAL: {
                 "name": "Casual & Friendly",
-                "description": "Conversational, approachable, uses emojis and friendly language",
+                "description": "Conversational, approachable, clean formatting",
                 "prompt_modifier": """
-                Respond in a casual, friendly, conversational tone. Use emojis when appropriate 
-                to make the conversation more engaging. Be approachable and warm while still 
-                being informative. Use everyday language and avoid overly technical jargon 
-                unless specifically asked.
+                Respond in a casual, friendly, conversational tone. Be approachable and warm
+                while still being informative. Use everyday language and avoid overly technical
+                jargon unless specifically asked.
+
+                IMPORTANT FORMATTING RULES:
+                - Do NOT use emojis in responses
+                - Keep responses concise - prioritize clarity over length
+                - Use clean bullet points for lists, not decorated headers
+                - For data tables (trending tokens, portfolio), show top 5-7 items max
+                - Avoid excessive punctuation (!!!, ???) and all-caps
+                - One insight or recommendation at the end, not a long list
                 """,
-                "example_phrases": ["Hey there! 👋", "That's awesome!", "Let me break this down for you", "Hope this helps! 😊"]
+                "example_phrases": ["Hey there!", "That's great!", "Let me break this down for you", "Hope this helps!"]
             },
             ResponseStyle.TECHNICAL: {
                 "name": "Technical & Detailed",
-                "description": "Precise, data-focused, detailed explanations with technical depth",
+                "description": "Precise, data-focused analysis with technical depth",
                 "prompt_modifier": """
-                Respond in a technical, precise manner. Provide detailed explanations with 
-                specific data points, metrics, and technical terminology. Focus on accuracy 
-                and depth. Include relevant technical concepts and be comprehensive in your 
-                analysis. Use professional language throughout.
+                Respond in a technical, precise manner. Provide specific data points, metrics,
+                and technical terminology. Focus on accuracy and depth.
+
+                FORMATTING RULES:
+                - Do NOT use emojis
+                - Lead with key metrics and data
+                - Use clean tables or bullet points
+                - Keep analysis focused and scannable
                 """,
-                "example_phrases": ["Based on the data analysis", "The technical implementation involves", "Specifically, the metrics indicate", "From a protocol perspective"]
+                "example_phrases": ["Based on the data", "The metrics indicate", "From a protocol perspective"]
             },
             ResponseStyle.BRIEF: {
                 "name": "Brief & Actionable",
-                "description": "Concise, to-the-point responses focused on key actionable insights",
+                "description": "Ultra-concise, to-the-point responses",
                 "prompt_modifier": """
-                Keep responses concise and actionable. Focus on the key points and main 
-                takeaways. Prioritize actionable information and clear recommendations. 
-                Avoid lengthy explanations unless specifically requested. Be direct and 
-                efficient in communication.
+                Keep responses extremely concise. Focus only on the key points and main
+                takeaways. Be direct and efficient.
+
+                FORMATTING RULES:
+                - Do NOT use emojis
+                - Maximum 3-5 bullet points
+                - One sentence summary if possible
+                - No pleasantries or filler
                 """,
-                "example_phrases": ["Key points:", "Bottom line:", "Action items:", "Summary:"]
+                "example_phrases": ["Key points:", "Bottom line:", "Summary:"]
             },
             ResponseStyle.EDUCATIONAL: {
                 "name": "Educational & Learning-Focused",
-                "description": "Step-by-step explanations designed for learning and understanding",
+                "description": "Clear step-by-step explanations for learning",
                 "prompt_modifier": """
-                Focus on teaching and education. Break down complex concepts into digestible 
-                steps. Provide context and background information. Encourage questions and 
-                deeper exploration. Use analogies and examples to clarify difficult concepts. 
-                Structure responses in a learning-friendly way.
+                Focus on teaching and education. Break down complex concepts into digestible
+                steps. Use analogies and examples to clarify.
+
+                FORMATTING RULES:
+                - Do NOT use emojis
+                - Use numbered steps for processes
+                - Keep explanations concise but clear
+                - One concept at a time
                 """,
-                "example_phrases": ["Let me explain step by step", "Think of it this way:", "To understand this better", "Here's what you need to know:"]
+                "example_phrases": ["Let me explain:", "Think of it this way:", "Here's how it works:"]
             }
         }
     
@@ -184,17 +203,16 @@ class StyleManager:
     
     def format_style_help(self) -> str:
         """Generate a help message about available styles."""
-        help_text = "🎨 **Available Response Styles:**\n\n"
-        
+        help_text = "**Available Response Styles:**\n\n"
+
         for style, info in self.style_prompts.items():
-            current_marker = " ✨ (current)" if style == self.current_style else ""
+            current_marker = " (current)" if style == self.current_style else ""
             help_text += f"**{info['name']}**{current_marker}\n"
             help_text += f"- {info['description']}\n"
             help_text += f"- Command: `/style {style.value}`\n\n"
-        
-        help_text += "💡 **Tips:**\n"
-        help_text += "- Use `/style [name]` to switch styles explicitly\n"
-        help_text += "- The agent can also auto-detect your preferred style from context\n"
-        help_text += "- Your style preference is remembered for the conversation\n"
-        
+
+        help_text += "**Tips:**\n"
+        help_text += "- Use `/style [name]` to switch styles\n"
+        help_text += "- Style preference is remembered for the conversation\n"
+
         return help_text
