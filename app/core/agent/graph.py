@@ -1,4 +1,9 @@
-"""LangGraph-powered orchestration for the Sherpa agent pipeline."""
+"""LangGraph-powered orchestration for the Sherpa agent pipeline.
+
+This module uses LangGraph to orchestrate the agent processing flow.
+The pipeline now uses LLM-driven tool selection via the ReAct loop
+instead of keyword-based tool detection.
+"""
 
 from __future__ import annotations
 
@@ -32,10 +37,19 @@ class AgentProcessState(TypedDict, total=False):
     tool_data: Dict[str, Any]
     llm_response: Optional["LLMResponse"]
     final_response: Optional["AgentResponse"]
+    use_legacy_tools: bool  # Flag to use legacy keyword-based tools
 
 
 def build_agent_process_graph(agent: "Agent"):
-    """Compile the LangGraph pipeline that powers ``Agent.process_message``."""
+    """Compile the LangGraph pipeline that powers ``Agent.process_message``.
+
+    New Flow (LLM-driven tool selection):
+        handle_style → determine_persona → prepare_context → run_react_loop
+        → handle_bridge → handle_swap → format_response → update_conversation
+
+    The ReAct loop handles all tool calling through the LLM's native tool calling
+    capabilities, replacing keyword-based detection.
+    """
 
     graph: StateGraph[AgentProcessState] = StateGraph(AgentProcessState)
 
@@ -56,13 +70,6 @@ def build_agent_process_graph(agent: "Agent"):
         )
         return {'persona': persona}
 
-    async def ensure_portfolio(state: AgentProcessState) -> AgentProcessState:
-        await agent._ensure_portfolio_context(  # pylint: disable=protected-access
-            state['conversation_id'],
-            state['request'],
-        )
-        return {}
-
     async def prepare_context(state: AgentProcessState) -> AgentProcessState:
         persona = state['persona'] or 'friendly'
         context_messages = await agent._prepare_context(  # pylint: disable=protected-access
@@ -72,14 +79,17 @@ def build_agent_process_graph(agent: "Agent"):
         )
         return {'context_messages': context_messages}
 
-    async def execute_tools(state: AgentProcessState) -> AgentProcessState:
-        tool_data = await agent._execute_tools(  # pylint: disable=protected-access
+    async def run_react_loop(state: AgentProcessState) -> AgentProcessState:
+        """Run the LLM-driven ReAct loop for tool selection and execution."""
+        llm_response, tool_data = await agent._run_react_loop(  # pylint: disable=protected-access
+            state.get('context_messages', []),
             state['request'],
             state['conversation_id'],
         )
-        return {'tool_data': tool_data}
+        return {'llm_response': llm_response, 'tool_data': tool_data}
 
     async def handle_bridge(state: AgentProcessState) -> AgentProcessState:
+        """Handle bridge quote requests (special case, not part of ReAct loop)."""
         tool_data = dict(state.get('tool_data', {}))
         wallet_address = tool_data.get('_address')
         if wallet_address is None:
@@ -97,6 +107,7 @@ def build_agent_process_graph(agent: "Agent"):
         return {'tool_data': tool_data}
 
     async def handle_swap(state: AgentProcessState) -> AgentProcessState:
+        """Handle swap quote requests (special case, not part of ReAct loop)."""
         tool_data = dict(state.get('tool_data', {}))
         wallet_address = tool_data.get('_address')
         if wallet_address is None:
@@ -128,50 +139,6 @@ def build_agent_process_graph(agent: "Agent"):
             tool_data['swap_quote'] = swap_quote
         return {'tool_data': tool_data}
 
-    async def augment_tvl(state: AgentProcessState) -> AgentProcessState:
-        tool_data = dict(state.get('tool_data', {}))
-        try:
-            if agent._needs_tvl_data(state['request']):  # pylint: disable=protected-access
-                params = agent._extract_tvl_params(state['request'])  # pylint: disable=protected-access
-                ts, tvl = await get_tvl_series(protocol=params['protocol'], window=params['window'])
-                stats = agent._compute_tvl_stats(ts, tvl)  # pylint: disable=protected-access
-                tool_data['defillama_tvl'] = {
-                    'protocol': params['protocol'],
-                    'window': params['window'],
-                    'timestamps': ts,
-                    'tvl': tvl,
-                    'stats': stats,
-                }
-                if agent.context_manager:
-                    try:
-                        await agent.context_manager.set_active_focus(  # type: ignore[attr-defined]
-                            state['conversation_id'],
-                            {
-                                'entity': params['protocol'],
-                                'protocol': params['protocol'],
-                                'metric': 'tvl',
-                                'window': params['window'],
-                                'chain': state['request'].chain,
-                                'stats': stats,
-                                'source': 'defillama',
-                            },
-                        )
-                    except Exception as exc:  # pragma: no cover - logging only
-                        agent.logger.warning('Failed setting episodic focus: %s', exc)
-        except Exception as exc:  # pragma: no cover - logging only
-            agent.logger.error('DefiLlama TVL fetch error: %s', exc)
-        return {'tool_data': tool_data}
-
-    async def generate_llm(state: AgentProcessState) -> AgentProcessState:
-        persona = state['persona'] or 'friendly'
-        llm_response = await agent._generate_llm_response(  # pylint: disable=protected-access
-            state.get('context_messages', []),
-            state.get('tool_data', {}),
-            persona,
-            state['conversation_id'],
-        )
-        return {'llm_response': llm_response}
-
     async def format_response(state: AgentProcessState) -> AgentProcessState:
         persona = state['persona'] or 'friendly'
         final_response = await agent._format_response(  # pylint: disable=protected-access
@@ -191,16 +158,13 @@ def build_agent_process_graph(agent: "Agent"):
         )
         return {}
 
-    # Register graph nodes
+    # Register graph nodes - simplified flow
     graph.add_node('handle_style', handle_style)
     graph.add_node('determine_persona', determine_persona)
-    graph.add_node('ensure_portfolio', ensure_portfolio)
     graph.add_node('prepare_context', prepare_context)
-    graph.add_node('execute_tools', execute_tools)
-    graph.add_node('augment_tvl', augment_tvl)
-    graph.add_node('handle_swap', handle_swap)
+    graph.add_node('run_react_loop', run_react_loop)
     graph.add_node('handle_bridge', handle_bridge)
-    graph.add_node('generate_llm', generate_llm)
+    graph.add_node('handle_swap', handle_swap)
     graph.add_node('format_response', format_response)
     graph.add_node('update_conversation', update_conversation)
 
@@ -218,19 +182,13 @@ def build_agent_process_graph(agent: "Agent"):
         },
     )
 
-    graph.add_edge('determine_persona', 'ensure_portfolio')
-    graph.add_edge('ensure_portfolio', 'prepare_context')
-    graph.add_edge('prepare_context', 'execute_tools')
-    graph.add_edge('execute_tools', 'handle_bridge')
+    # Simplified flow: persona → context → ReAct loop → bridge/swap handling → format
+    graph.add_edge('determine_persona', 'prepare_context')
+    graph.add_edge('prepare_context', 'run_react_loop')
+    graph.add_edge('run_react_loop', 'handle_bridge')
     graph.add_edge('handle_bridge', 'handle_swap')
-    graph.add_edge('handle_swap', 'augment_tvl')
-    graph.add_edge('augment_tvl', 'generate_llm')
-    graph.add_edge('generate_llm', 'format_response')
+    graph.add_edge('handle_swap', 'format_response')
     graph.add_edge('format_response', 'update_conversation')
     graph.add_edge('update_conversation', END)
 
     return graph.compile()
-
-
-# Local imports placed at bottom to avoid circular dependencies
-from ...tools.defillama import get_tvl_series  # noqa: E402

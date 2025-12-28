@@ -15,11 +15,18 @@ from .base import (
     LLMProviderAuthError,
     LLMProviderError,
     LLMProviderRateLimitError,
+    LLMResponse,
+    ToolDefinition,
 )
 
 
 class ZAIProvider(LLMProvider):
-    """Z AI chat completion provider."""
+    """Z AI chat completion provider.
+
+    Note: ZAI does not support native tool/function calling.
+    """
+
+    supports_tools: bool = False
 
     def __init__(
         self,
@@ -69,8 +76,12 @@ class ZAIProvider(LLMProvider):
         messages: List[LLMMessage],
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        tools: Optional[List[ToolDefinition]] = None,
         **kwargs: Any,
     ) -> LLMResponse:
+        if tools:
+            raise LLMProviderError("ZAIProvider does not support tool calling")
+
         start_time = time.time()
 
         payload = self._build_payload(
@@ -107,8 +118,12 @@ class ZAIProvider(LLMProvider):
         messages: List[LLMMessage],
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
+        tools: Optional[List[ToolDefinition]] = None,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
+        if tools:
+            raise LLMProviderError("ZAIProvider does not support tool calling")
+
         payload = self._build_payload(
             messages=messages,
             max_tokens=max_tokens,

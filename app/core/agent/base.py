@@ -18,7 +18,10 @@ import httpx
 from pydantic import BaseModel, Field
 
 from ...config import settings
-from ...providers.llm.base import LLMProvider, LLMMessage, LLMResponse
+from ...providers.llm.base import (
+    LLMProvider, LLMMessage, LLMResponse,
+    ToolDefinition, ToolCall, ToolResult,
+)
 from ...tools.portfolio import get_portfolio
 from ...services.trending import get_trending_tokens
 from ...services.token_chart import get_token_chart as fetch_token_chart
@@ -28,6 +31,7 @@ from ...types.responses import ChatResponse
 from ..bridge import BridgeManager
 from ..swap import SwapManager
 from .styles import StyleManager, ResponseStyle
+from .tools import ToolRegistry, ToolExecutor
 from .graph import build_agent_process_graph
 
 
@@ -95,11 +99,17 @@ class Agent:
         self.logger = logger or logging.getLogger(__name__)
         self.provider_id = provider_id or llm_provider.__class__.__name__.lower()
         self.model_id = model_id or getattr(llm_provider, "model", None)
-        
+
         # Agent state
         self._active_conversations: Dict[str, Dict] = {}
         # Style state per conversation
         self._conversation_styles: Dict[str, ResponseStyle] = {}
+
+        # Tool calling infrastructure
+        self.tool_registry = ToolRegistry(logger=self.logger)
+        self.tool_executor = ToolExecutor(self.tool_registry, logger=self.logger)
+        self._max_tool_iterations = 5  # Maximum ReAct loop iterations
+
         # LangGraph pipeline orchestrating the processing flow
         self._process_graph = build_agent_process_graph(self)
         # Bridge + swap orchestration managers
@@ -363,6 +373,184 @@ class Agent:
                 tool_data['token_chart_error'] = str(exc)
 
         return tool_data
+
+    async def _run_react_loop(
+        self,
+        messages: List[LLMMessage],
+        request: ChatRequest,
+        conversation_id: str,
+    ) -> Tuple[LLMResponse, Dict[str, Any]]:
+        """
+        Run the ReAct (Reasoning + Acting) loop for LLM-driven tool selection.
+
+        The LLM decides which tools to call based on semantic understanding of the
+        user's intent. This replaces the keyword-based tool detection approach.
+
+        Returns:
+            Tuple of (final_llm_response, tool_data_dict)
+        """
+        tool_data: Dict[str, Any] = {}
+
+        # Extract wallet address for tools that need it
+        wallet_address = self._extract_wallet_address(request)
+        tool_data['_address'] = wallet_address
+
+        # Check if provider supports tool calling
+        if not self.llm_provider.supports_tools:
+            self.logger.debug("LLM provider does not support tools, running without tool calling")
+            response = await self.llm_provider.generate_response(
+                messages=messages,
+                max_tokens=4000,
+                temperature=0.7,
+            )
+            return response, tool_data
+
+        # Get tool definitions
+        tools = self.tool_registry.get_definitions()
+
+        # Start the ReAct loop
+        current_messages = list(messages)
+        final_response: Optional[LLMResponse] = None
+
+        for iteration in range(self._max_tool_iterations):
+            self.logger.debug(f"ReAct loop iteration {iteration + 1}/{self._max_tool_iterations}")
+
+            # Get LLM response with tool definitions
+            response = await self.llm_provider.generate_response(
+                messages=current_messages,
+                tools=tools,
+                max_tokens=4000,
+                temperature=0.7,
+            )
+
+            # If no tool calls, we're done
+            if not response.tool_calls:
+                self.logger.debug("LLM finished without tool calls")
+                final_response = response
+                break
+
+            self.logger.debug(f"LLM requested {len(response.tool_calls)} tool call(s)")
+
+            # Inject wallet address into tools that require it
+            for tc in response.tool_calls:
+                tool = self.tool_registry.get_tool(tc.name)
+                if tool and tool.requires_address and wallet_address:
+                    if 'wallet_address' not in tc.arguments:
+                        tc.arguments['wallet_address'] = wallet_address
+                    if 'chain' not in tc.arguments and request.chain:
+                        tc.arguments['chain'] = request.chain
+
+            # Execute all tool calls in parallel
+            results = await self.tool_executor.execute_parallel(response.tool_calls)
+
+            # Store results in tool_data and build messages for next iteration
+            for tc, result in zip(response.tool_calls, results):
+                # Map tool results to expected format in tool_data
+                result_data = result.result if result.result else {'error': result.error}
+                tool_data[tc.name] = {
+                    'call': tc.arguments,
+                    'result': result_data,
+                }
+
+                # Convert results to format expected by _format_response
+                self._map_tool_result_to_legacy_format(tc.name, result_data, tool_data)
+
+            # Append assistant message with tool calls
+            current_messages.append(LLMMessage(
+                role="assistant",
+                content=response.content,
+                tool_calls=response.tool_calls,
+            ))
+
+            # Append tool results
+            for result in results:
+                current_messages.append(LLMMessage(
+                    role="tool_result",
+                    tool_result=result,
+                ))
+
+            final_response = response
+
+        if final_response is None:
+            # This shouldn't happen, but just in case
+            final_response = await self.llm_provider.generate_response(
+                messages=current_messages,
+                max_tokens=4000,
+                temperature=0.7,
+            )
+
+        return final_response, tool_data
+
+    def _map_tool_result_to_legacy_format(
+        self,
+        tool_name: str,
+        result_data: Dict[str, Any],
+        tool_data: Dict[str, Any],
+    ) -> None:
+        """
+        Map tool results to the legacy format expected by _format_response.
+
+        This maintains backward compatibility during the transition.
+        """
+        if not isinstance(result_data, dict):
+            return
+
+        if tool_name == "get_portfolio":
+            if result_data.get('success'):
+                tool_data['portfolio'] = {
+                    'data': result_data.get('data', {}),
+                    'sources': result_data.get('sources', []),
+                    'warnings': result_data.get('warnings', []),
+                }
+            else:
+                tool_data['portfolio_error'] = {
+                    'error': result_data.get('error', 'Unknown error'),
+                    'warnings': result_data.get('warnings', []),
+                }
+                tool_data['needs_portfolio'] = True
+
+        elif tool_name == "get_token_chart":
+            if result_data.get('success'):
+                # Remove 'success' key and pass the rest
+                chart_data = {k: v for k, v in result_data.items() if k != 'success'}
+                tool_data['token_chart'] = chart_data
+            else:
+                tool_data['token_chart_error'] = result_data.get('error', 'Unknown error')
+
+        elif tool_name == "get_trending_tokens":
+            if result_data.get('success'):
+                tool_data['trending_tokens'] = {
+                    'tokens': result_data.get('tokens', []),
+                    'fetched_at': result_data.get('fetched_at'),
+                    'query': None,
+                    'focus': result_data.get('focus'),
+                    'total_available': result_data.get('total_available', 0),
+                    'sources': [{'name': 'CoinGecko', 'url': 'https://www.coingecko.com'}],
+                }
+            else:
+                tool_data['trending_error'] = result_data.get('error', 'Unknown error')
+
+        elif tool_name == "get_wallet_history":
+            if result_data.get('success'):
+                tool_data['history_summary'] = {
+                    'snapshot': result_data.get('snapshot', {}),
+                    'events': result_data.get('events', []),
+                    'limit': result_data.get('limit'),
+                }
+            else:
+                tool_data['history_summary_error'] = result_data.get('error', 'Unknown error')
+
+        elif tool_name == "get_tvl_data":
+            if result_data.get('success'):
+                tool_data['defillama_tvl'] = {
+                    'protocol': result_data.get('protocol'),
+                    'window': result_data.get('window'),
+                    'timestamps': result_data.get('timestamps', []),
+                    'tvl': result_data.get('tvl', []),
+                    'stats': result_data.get('stats', {}),
+                }
+            else:
+                tool_data['tvl_error'] = result_data.get('error', 'Unknown error')
 
     def _needs_tvl_data(self, request: ChatRequest) -> bool:
         """Determine if the request is asking for TVL/chart data (e.g., Uniswap TVL)."""
@@ -902,6 +1090,8 @@ class Agent:
 
         message = request.messages[-1].content or ''
         lowered = message.lower()
+
+        # Direct chart keywords
         chart_keywords = (
             'chart',
             'candles',
@@ -911,9 +1101,42 @@ class Agent:
             'price graph',
             'price plot',
             'price chart',
+            'price history',
+            'historical price',
+            'price over time',
+            'price movement',
+            'price trend',
+            'show.*price',
+            'how.*price',
         )
 
-        if not any(keyword in lowered for keyword in chart_keywords):
+        # Check for direct keyword matches
+        has_chart_keyword = any(keyword in lowered for keyword in chart_keywords if '.*' not in keyword)
+
+        # Check for regex patterns (show me X price, how has X price)
+        if not has_chart_keyword:
+            import re as regex_module
+            for pattern in chart_keywords:
+                if '.*' in pattern and regex_module.search(pattern, lowered):
+                    has_chart_keyword = True
+                    break
+
+        # Also trigger on "show me [token]" patterns for known token mentions
+        if not has_chart_keyword:
+            show_patterns = (
+                r"show\s+(?:me\s+)?(?:the\s+)?(\w+)(?:'s)?\s*(?:price|chart|history)?",
+                r"(\w+)(?:'s)?\s+(?:price\s+)?history",
+                r"what(?:'s|\s+is)\s+(\w+)(?:'s)?\s+price",
+                r"how\s+(?:has|is|did)\s+(\w+)\s+(?:been\s+)?(?:doing|performing|price)",
+            )
+            import re as regex_module
+            for pattern in show_patterns:
+                match = regex_module.search(pattern, lowered)
+                if match:
+                    has_chart_keyword = True
+                    break
+
+        if not has_chart_keyword:
             return None
 
         contract_address = self._extract_contract_address(message)
@@ -933,18 +1156,16 @@ class Agent:
             request_payload['contract_address'] = contract_address
         if symbol and not contract_address:
             # prefer explicit coin id when the symbol looks like a known slug
-            if symbol.lower() in {
-                'ethereum',
-                'bitcoin',
-                'solana',
-                'cardano',
-                'dogecoin',
-                'litecoin',
-                'polkadot',
-                'tron',
-                'avalanche',
-                'chainlink',
-            }:
+            known_coin_slugs = {
+                'ethereum', 'bitcoin', 'solana', 'cardano', 'dogecoin',
+                'litecoin', 'polkadot', 'tron', 'avalanche', 'chainlink',
+                'morpho', 'uniswap', 'aave', 'compound', 'maker',
+                'curve-dao-token', 'lido-dao', 'rocket-pool', 'frax',
+                'convex-finance', 'yearn-finance', 'sushi', 'balancer',
+                'pendle', '1inch', 'gmx', 'radiant-capital', 'arbitrum',
+                'optimism', 'polygon', 'base', 'mantle', 'celestia',
+            }
+            if symbol.lower() in known_coin_slugs:
                 request_payload['coin_id'] = symbol.lower()
             else:
                 request_payload['symbol'] = symbol
@@ -999,6 +1220,9 @@ class Agent:
             'GRAPH', 'LOOK', 'SEE', 'CAN', 'YOU', 'THE', 'FOR', 'WITH', 'ABOUT', 'NEED', 'HELP', 'THIS',
             'THAT', 'REAL', 'TIME', 'LATEST', 'GIVE', 'GET', 'WHAT', 'AN', 'A', 'ME', 'US', 'PLOT',
             'DISPLAY', 'OF', 'INTO', 'CHECK', 'PRICEACTION', 'PLEASESHOW', 'PLEASES', 'ON', 'TO', 'IS',
+            'HISTORY', 'HISTORICAL', 'MOVEMENT', 'TREND', 'ACTION', 'OVER', 'PAST', 'LAST', 'DAYS',
+            'WEEK', 'MONTH', 'YEAR', 'HOW', 'HAS', 'BEEN', 'DOING', 'PERFORMING', 'UP', 'DOWN',
+            'SPIN', 'CREATE', 'GENERATE', 'MAKE', 'BUILD', 'DRAW', 'RENDER', 'WIDGET',
         }
 
         words = re.findall(r'\b[a-zA-Z0-9]{2,15}\b', message)
