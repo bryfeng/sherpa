@@ -7,9 +7,8 @@ PYTHON_VERSION = "3.11"
 [phases.install]
 cmds = [
   "python -m pip install --upgrade pip",
-  "pip install ."
+  "pip install -r requirements.txt"
 ]
 
 [start]
-# adjust module path if app is not in main.py
-cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1"
+cmd = "uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1"
