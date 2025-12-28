@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     max_cache_size: int = Field(default=1000, description="Maximum cache size")
 
     # Rate Limiting
+    rate_limit_enabled: bool = Field(default=True, description="Enable rate limiting middleware")
     max_concurrent_requests: int = Field(default=10, description="Max concurrent API requests")
     request_timeout_seconds: int = Field(default=30, description="Request timeout")
 

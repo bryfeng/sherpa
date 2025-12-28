@@ -1,9 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary
+from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth
 from .api import relay as relay_api
 from .agent_runtime.router import router as runtime_router
 from .agent_runtime import get_runtime, register_builtin_strategies
+from .middleware import RateLimitMiddleware
 from .config import settings
 
 # Create FastAPI app
@@ -24,6 +25,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add rate limiting middleware (added after CORS so it runs first on requests)
+if settings.rate_limit_enabled:
+    app.add_middleware(RateLimitMiddleware)
+
 # Include routers
 app.include_router(health.router, tags=["Health"])
 app.include_router(tools.router, tags=["Tools"])
@@ -36,6 +41,7 @@ app.include_router(perps.router, tags=["Perps"])
 app.include_router(llm.router, tags=["LLM"])
 app.include_router(history_summary.router, tags=["History"])
 app.include_router(runtime_router, tags=["Runtime"])
+app.include_router(auth.router, tags=["Auth"])
 
 
 @app.get("/")
