@@ -181,6 +181,26 @@ The system uses a sophisticated multi-layer architecture:
 - **Maintains full API compatibility** with existing frontend systems
 - **Structured response format**: `{reply, panels, sources}` for rich UIs
 
+#### 🛡️ **Production Safety Systems** (`app/core/`)
+
+**Policy Engine** (`app/core/policy/`)
+- **`models.py`**: ActionContext, PolicyViolation, PolicyResult, RiskLevel enums
+- **`session_policy.py`**: Validates actions against session key permissions and limits
+- **`risk_policy.py`**: Risk assessment with configurable thresholds (max tx value, position limits, slippage)
+- **`system_policy.py`**: Global safety controls (emergency stop, maintenance mode, blocked contracts)
+- **`engine.py`**: Unified policy evaluation combining all layers
+
+**Strategy State Machine** (`app/core/strategy/`)
+- **`models.py`**: StrategyState enum, ExecutionContext, ExecutionStep, StateTransition
+- **`state_machine.py`**: Validated state transitions with timeout handling and callbacks
+- **`handlers.py`**: State-specific handlers for ANALYZING, PLANNING, EXECUTING, MONITORING
+- **`persistence.py`**: Convex database persistence adapter
+
+**Error Recovery** (`app/core/recovery/`)
+- **`errors.py`**: Error classification (RecoverableError, UnrecoverableError, RateLimitError, etc.)
+- **`strategies.py`**: RetryStrategy, ExponentialBackoffStrategy, CircuitBreakerStrategy, FallbackStrategy
+- **`executor.py`**: RecoveryExecutor combining retry, circuit breaker, and fallback patterns
+
 #### 📋 **Activity Planning System** (`app/core/planning/`)
 - **Hybrid architecture**: YAML schemas + Python strategies + JSON-serializable config
 - **`protocol.py`**: `BaseStrategy` Protocol, `TradeIntent`, `AmountSpec` for strategy abstraction
@@ -329,11 +349,14 @@ python test_agent_system.py
 # Test response style system
 python test_style_system.py
 
-# Test API integration  
+# Test API integration
 python -m pytest tests/test_api.py -v
 
 # Test LLM providers
 python test_llm_provider.py
+
+# Test Production Safety Systems (Policy, State Machine, Recovery)
+.venv/bin/python -m pytest tests/core/policy/ tests/core/strategy/ tests/core/recovery/ -v
 ```
 
 ### Run All Tests (Sequential)

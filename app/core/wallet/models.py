@@ -155,7 +155,9 @@ class SessionKey:
         """Check if the session key is currently valid."""
         if self.status != SessionKeyStatus.ACTIVE:
             return False
-        if datetime.utcnow() > self.expires_at:
+        # Handle both naive and timezone-aware datetimes
+        now = datetime.now(self.expires_at.tzinfo) if self.expires_at.tzinfo else datetime.utcnow()
+        if now > self.expires_at:
             return False
         return True
 
