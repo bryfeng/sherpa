@@ -258,8 +258,8 @@ class ToolRegistry:
             if result.data:
                 return {
                     "success": True,
-                    "data": result.data.model_dump(),
-                    "sources": [s.model_dump() for s in result.sources],
+                    "data": result.data.model_dump(mode='json'),
+                    "sources": [s.model_dump(mode='json') for s in result.sources],
                     "warnings": result.warnings or [],
                 }
             return {

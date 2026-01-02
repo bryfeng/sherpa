@@ -196,9 +196,9 @@ class Agent:
         persona_name: str
     ) -> List[LLMMessage]:
         """Prepare the full context for LLM including system prompt and conversation history"""
-        
+
         context_messages = []
-        
+
         # Add system prompt from persona
         if self.persona_manager:
             persona = self.persona_manager.get_persona(persona_name)
@@ -208,21 +208,30 @@ class Agent:
             # Default system prompt if no persona manager
             default_prompt = self._get_default_system_prompt()
             context_messages.append(LLMMessage(role="system", content=default_prompt))
-            
+
+        # Add wallet address context if available
+        # This ensures the LLM knows a wallet is connected and won't ask for it
+        wallet_address = self._extract_wallet_address(request)
+        if wallet_address:
+            context_messages.append(LLMMessage(
+                role="system",
+                content=f"User's connected wallet address: {wallet_address} (chain: {request.chain or 'ethereum'}). Use this address for any portfolio or wallet-related queries - do not ask the user for their wallet address."
+            ))
+
         # Add conversation history if context manager available
         if self.context_manager:
             history = await self.context_manager.get_context(conversation_id)
             # Context manager should return formatted context string
             if history:
                 context_messages.append(LLMMessage(role="system", content=f"Conversation context: {history}"))
-                
+
         # Convert chat messages to LLM format
         for msg in request.messages:
             context_messages.append(LLMMessage(
                 role=msg.role,
                 content=msg.content
             ))
-            
+
         return context_messages
 
     async def _execute_tools(self, request: ChatRequest, conversation_id: str) -> Dict[str, Any]:
@@ -242,8 +251,8 @@ class Agent:
 
                     if portfolio_result.data:
                         tool_data['portfolio'] = {
-                            'data': portfolio_result.data.model_dump(),
-                            'sources': [s.model_dump() for s in portfolio_result.sources],
+                            'data': portfolio_result.data.model_dump(mode='json'),
+                            'sources': [s.model_dump(mode='json') for s in portfolio_result.sources],
                             'warnings': portfolio_result.warnings or []
                         }
                     else:
@@ -1337,8 +1346,14 @@ class Agent:
 
     def _format_tool_data_for_llm(self, tool_data: Dict[str, Any]) -> str:
         """Format tool data into a readable context for the LLM"""
-        
+
         formatted_parts = []
+
+        # Always include the connected wallet address if available
+        # This ensures the LLM knows a wallet is connected even if portfolio fetch fails
+        wallet_address = tool_data.get('_address')
+        if wallet_address:
+            formatted_parts.append(f"Connected wallet: {wallet_address}")
 
         def _fmt_price(value: Any) -> str:
             try:
@@ -1662,7 +1677,7 @@ class Agent:
                 return
             portfolio_result = await get_portfolio(wallet_address, request.chain)
             if portfolio_result.data:
-                await self.context_manager.integrate_portfolio_data(conversation_id, portfolio_result.data.model_dump())
+                await self.context_manager.integrate_portfolio_data(conversation_id, portfolio_result.data.model_dump(mode='json'))
         except Exception as e:
             self.logger.debug(f"Proactive portfolio fetch skipped: {e}")
 
