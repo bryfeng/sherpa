@@ -285,14 +285,14 @@ class CoinGeckoNewsSource(NewsSourceFetcher):
             self._client = None
 
     async def fetch(self, source: NewsSource) -> List[NewsItem]:
-        """Fetch status updates from CoinGecko."""
+        """Fetch trending coins and significant movers from CoinGecko."""
         client = await self._get_client()
         items: List[NewsItem] = []
 
+        # Fetch trending coins
         try:
-            # Get status updates (includes project updates)
-            url = f"{self.BASE_URL}/status_updates"
-            response = await client.get(url, params={"per_page": 50})
+            url = f"{self.BASE_URL}/search/trending"
+            response = await client.get(url)
 
             if response.status_code == 429:
                 logger.warning("CoinGecko rate limit hit")
@@ -301,48 +301,54 @@ class CoinGeckoNewsSource(NewsSourceFetcher):
             response.raise_for_status()
             data = response.json()
 
-            for update in data.get("status_updates", []):
+            published_at = datetime.now(timezone.utc)
+
+            for i, coin_data in enumerate(data.get("coins", [])[:7]):
                 try:
-                    project = update.get("project", {})
-                    project_name = project.get("name", "Unknown")
-                    project_symbol = project.get("symbol", "").upper()
+                    coin = coin_data.get("item", {})
+                    coin_id = coin.get("id", "")
+                    name = coin.get("name", "Unknown")
+                    symbol = coin.get("symbol", "").upper()
+                    rank = coin.get("market_cap_rank")
+                    price_data = coin.get("data", {})
+                    price_change = price_data.get("price_change_percentage_24h", {}).get("usd", 0)
 
-                    title = update.get("title") or f"{project_name} Update"
-                    description = update.get("description", "")
-
-                    # Build URL
-                    project_id = project.get("id")
-                    url = f"https://www.coingecko.com/en/coins/{project_id}" if project_id else ""
-
-                    if not url:
+                    if not coin_id:
                         continue
 
-                    # Parse date
-                    created_at = update.get("created_at", "")
-                    published_at = self._parse_date(created_at) if created_at else datetime.now(timezone.utc)
+                    # Build news item about trending coin
+                    if price_change and abs(price_change) > 5:
+                        direction = "up" if price_change > 0 else "down"
+                        title = f"{name} ({symbol}) trending on CoinGecko, {direction} {abs(price_change):.1f}% in 24h"
+                    else:
+                        title = f"{name} ({symbol}) is trending on CoinGecko"
 
-                    # Get image
-                    image_url = project.get("image", {}).get("small")
+                    rank_info = f"Ranked #{rank} by market cap. " if rank else ""
+                    summary = f"{rank_info}{name} is currently one of the top trending cryptocurrencies on CoinGecko."
 
-                    source_id = f"cg-{update.get('id', self.generate_source_id(url))}"
+                    coin_url = f"https://www.coingecko.com/en/coins/{coin_id}"
+                    image_url = coin.get("small") or coin.get("thumb")
+
+                    # Use date + rank for unique ID (trending resets daily)
+                    source_id = f"cg-trending-{published_at.strftime('%Y%m%d')}-{i}"
 
                     news_item = NewsItem(
                         source_id=source_id,
-                        source="coingecko",
-                        title=self.clean_html(title),
-                        url=url,
+                        source="coingecko:trending",
+                        title=title,
+                        url=coin_url,
                         published_at=published_at,
-                        summary=self.clean_html(description)[:500],
-                        raw_content=self.clean_html(description),
+                        summary=summary,
+                        raw_content=summary,
                         image_url=image_url,
                     )
                     items.append(news_item)
 
                 except Exception as e:
-                    logger.warning(f"Error parsing CoinGecko update: {e}")
+                    logger.warning(f"Error parsing CoinGecko trending coin: {e}")
                     continue
 
-            logger.info(f"Fetched {len(items)} items from CoinGecko")
+            logger.info(f"Fetched {len(items)} trending items from CoinGecko")
 
         except httpx.HTTPStatusError as e:
             logger.error(f"CoinGecko HTTP error: {e}")
