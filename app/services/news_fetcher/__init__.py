@@ -18,6 +18,12 @@ from .models import (
 )
 from .sources import RSSSource, CoinGeckoNewsSource, DefiLlamaNewsSource
 from .processor import NewsProcessor
+from .batch_processor import (
+    BatchNewsProcessor,
+    BatchProcessingConfig,
+    ProcessingStats,
+    process_news_batch,
+)
 from .service import NewsFetcherService
 
 __all__ = [
@@ -37,6 +43,11 @@ __all__ = [
     "DefiLlamaNewsSource",
     # Processor
     "NewsProcessor",
+    # Batch Processor
+    "BatchNewsProcessor",
+    "BatchProcessingConfig",
+    "ProcessingStats",
+    "process_news_batch",
     # Service
     "NewsFetcherService",
 ]
