@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks
+from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks, copy_trading
 from .api import relay as relay_api
 from .agent_runtime.router import router as runtime_router
 from .agent_runtime import get_runtime, register_builtin_strategies
@@ -45,6 +45,7 @@ app.include_router(auth.router, tags=["Auth"])
 app.include_router(dca.router, tags=["DCA Strategies"])
 app.include_router(news.router, tags=["News"])
 app.include_router(webhooks.router, tags=["Webhooks"])
+app.include_router(copy_trading.router, tags=["Copy Trading"])
 
 
 @app.get("/")
@@ -67,11 +68,33 @@ async def _start_runtime() -> None:
     await get_runtime().ensure_started()
 
 
+@app.on_event("startup")
+async def _start_copy_trading_bridge() -> None:
+    """Start the copy trading event bridge."""
+    if getattr(settings, "copy_trading_enabled", True):
+        try:
+            from .core.copy_trading import start_copy_trading_bridge
+            await start_copy_trading_bridge()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to start copy trading bridge: {e}")
+
+
 @app.on_event("shutdown")
 async def _stop_runtime() -> None:
     runtime = get_runtime()
     if runtime.is_running:
         await runtime.stop()
+
+
+@app.on_event("shutdown")
+async def _stop_copy_trading_bridge() -> None:
+    """Stop the copy trading event bridge."""
+    try:
+        from .core.copy_trading import stop_copy_trading_bridge
+        await stop_copy_trading_bridge()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
