@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth
+from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks
 from .api import relay as relay_api
 from .agent_runtime.router import router as runtime_router
 from .agent_runtime import get_runtime, register_builtin_strategies
@@ -42,6 +42,9 @@ app.include_router(llm.router, tags=["LLM"])
 app.include_router(history_summary.router, tags=["History"])
 app.include_router(runtime_router, tags=["Runtime"])
 app.include_router(auth.router, tags=["Auth"])
+app.include_router(dca.router, tags=["DCA Strategies"])
+app.include_router(news.router, tags=["News"])
+app.include_router(webhooks.router, tags=["Webhooks"])
 
 
 @app.get("/")

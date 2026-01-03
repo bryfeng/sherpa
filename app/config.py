@@ -64,6 +64,20 @@ class Settings(BaseSettings):
         description="Base URL for Solana balances API",
     )
 
+    # Webhook Configuration (Event Monitoring)
+    alchemy_webhook_signing_key: str = Field(
+        default="",
+        description="Alchemy webhook signing key for signature verification",
+    )
+    helius_api_key: str = Field(
+        default="",
+        description="Helius API key for Solana webhooks (can be same as solana_helius_api_key)",
+    )
+    webhook_base_url: str = Field(
+        default="",
+        description="Base URL for webhook endpoints (e.g., https://api.yourapp.com)",
+    )
+
     # Jupiter Provider (Solana token list and prices)
     enable_jupiter: bool = Field(
         default=True,

@@ -1620,9 +1620,27 @@ class Agent:
             arrow = '↑' if change_pct > 0 else ('↓' if change_pct < 0 else '→')
             def _fmt_price(value: Any) -> str:
                 try:
-                    return f"${float(value):,.2f}"
+                    val = float(value)
                 except (TypeError, ValueError):
                     return 'n/a'
+                abs_val = abs(val)
+                if abs_val >= 1000:
+                    return f"${val:,.0f}"
+                if abs_val >= 1:
+                    return f"${val:,.2f}"
+                if abs_val >= 0.0001:
+                    return f"${val:,.6f}"
+                # For very small values like memecoins (PEPE, SHIB, etc.)
+                return f"${val:.10f}".rstrip('0').rstrip('.')
+            def _fmt_change(value: Any) -> str:
+                try:
+                    val = float(value)
+                except (TypeError, ValueError):
+                    return 'n/a'
+                abs_val = abs(val)
+                if abs_val >= 0.01:
+                    return f"{val:+.2f}"
+                return f"{val:+.8f}".rstrip('0').rstrip('.')
             def _fmt_time(value: Any) -> str:
                 try:
                     return datetime.fromtimestamp(int(value)/1000).strftime('%Y-%m-%d %H:%M')
@@ -1630,7 +1648,7 @@ class Agent:
                     return 'n/a'
             lines = [
                 f"{symbol} price ({window.upper()}) {arrow}",
-                f"- Latest: {_fmt_price(latest)} ({change_abs:+.2f}, {change_pct:+.2f}%)",
+                f"- Latest: {_fmt_price(latest)} ({_fmt_change(change_abs)}, {change_pct:+.2f}%)",
             ]
             if high is not None and low is not None:
                 lines.append(

@@ -565,11 +565,13 @@ class ToolRegistry:
         hours_back: int = 24,
     ) -> Dict[str, Any]:
         """Handle recent news fetch."""
+        from ...db import get_convex_client
         from ...services.news_fetcher.service import NewsFetcherService
 
         try:
-            # Initialize service (will use Convex client from context if available)
-            service = NewsFetcherService()
+            # Initialize service with Convex client
+            convex = get_convex_client()
+            service = NewsFetcherService(convex_client=convex)
 
             news_items = await service.get_recent_news(
                 category=category,
@@ -613,6 +615,7 @@ class ToolRegistry:
         min_relevance: float = 0.2,
     ) -> Dict[str, Any]:
         """Handle personalized news fetch."""
+        from ...db import get_convex_client
         from ...services.relevance import RelevanceService
         from ...tools.portfolio import get_portfolio
 
@@ -636,8 +639,9 @@ class ToolRegistry:
                     "valueUsd": float(token.balance_usd) if token.balance_usd else 0,
                 })
 
-            # Get personalized news
-            service = RelevanceService()
+            # Get personalized news with Convex client
+            convex = get_convex_client()
+            service = RelevanceService(convex_client=convex)
             news_items = await service.get_personalized_news(
                 wallet_address=wallet_address,
                 holdings=holdings,
@@ -683,13 +687,15 @@ class ToolRegistry:
         limit: int = 10,
     ) -> Dict[str, Any]:
         """Handle token-specific news fetch."""
+        from ...db import get_convex_client
         from ...services.news_fetcher.service import NewsFetcherService
 
         try:
             # Normalize symbols to uppercase
             normalized_symbols = [s.upper() for s in symbols]
 
-            service = NewsFetcherService()
+            convex = get_convex_client()
+            service = NewsFetcherService(convex_client=convex)
             news_items = await service.get_token_news(
                 symbols=normalized_symbols,
                 limit=limit,

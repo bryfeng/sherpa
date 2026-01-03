@@ -1,0 +1,404 @@
+"""
+DCA Strategy Models
+
+Data models for DCA strategy configuration and execution.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from decimal import Decimal
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+
+class DCAFrequency(str, Enum):
+    """DCA execution frequency."""
+    HOURLY = "hourly"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    BIWEEKLY = "biweekly"
+    MONTHLY = "monthly"
+    CUSTOM = "custom"
+
+
+class DCAStatus(str, Enum):
+    """DCA strategy status."""
+    DRAFT = "draft"
+    PENDING_SESSION = "pending_session"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    EXPIRED = "expired"
+
+
+class ExecutionStatus(str, Enum):
+    """Individual execution status."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class SkipReason(str, Enum):
+    """Reason for skipping an execution."""
+    GAS_TOO_HIGH = "gas_too_high"
+    PRICE_ABOVE_LIMIT = "price_above_limit"
+    PRICE_BELOW_LIMIT = "price_below_limit"
+    INSUFFICIENT_BALANCE = "insufficient_balance"
+    SESSION_EXPIRED = "session_expired"
+    SLIPPAGE_EXCEEDED = "slippage_exceeded"
+    MANUALLY_SKIPPED = "manually_skipped"
+
+
+@dataclass
+class TokenInfo:
+    """Token information for DCA."""
+    symbol: str
+    address: str
+    chain_id: int
+    decimals: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "address": self.address,
+            "chainId": self.chain_id,
+            "decimals": self.decimals,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> TokenInfo:
+        return cls(
+            symbol=data["symbol"],
+            address=data["address"],
+            chain_id=data["chainId"],
+            decimals=data["decimals"],
+        )
+
+
+@dataclass
+class DCAConfig:
+    """DCA strategy configuration (user-editable parameters)."""
+    # What to buy
+    from_token: TokenInfo
+    to_token: TokenInfo
+    amount_per_execution_usd: Decimal
+
+    # Schedule
+    frequency: DCAFrequency
+    execution_hour_utc: int = 9  # Default 9am UTC
+    execution_day_of_week: Optional[int] = None  # 0=Sunday, for weekly
+    execution_day_of_month: Optional[int] = None  # 1-31, for monthly
+    cron_expression: Optional[str] = None  # For custom
+
+    # Constraints
+    max_slippage_bps: int = 100  # 1% default
+    max_gas_usd: Decimal = Decimal("10")
+    skip_if_gas_above_usd: Optional[Decimal] = None
+    pause_if_price_above_usd: Optional[Decimal] = None
+    pause_if_price_below_usd: Optional[Decimal] = None
+    min_amount_out: Optional[Decimal] = None
+
+    # Budget limits
+    max_total_spend_usd: Optional[Decimal] = None
+    max_executions: Optional[int] = None
+    end_date: Optional[datetime] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "fromToken": self.from_token.to_dict(),
+            "toToken": self.to_token.to_dict(),
+            "amountPerExecutionUsd": float(self.amount_per_execution_usd),
+            "frequency": self.frequency.value,
+            "executionHourUtc": self.execution_hour_utc,
+            "executionDayOfWeek": self.execution_day_of_week,
+            "executionDayOfMonth": self.execution_day_of_month,
+            "cronExpression": self.cron_expression,
+            "maxSlippageBps": self.max_slippage_bps,
+            "maxGasUsd": float(self.max_gas_usd),
+            "skipIfGasAboveUsd": float(self.skip_if_gas_above_usd) if self.skip_if_gas_above_usd else None,
+            "pauseIfPriceAboveUsd": float(self.pause_if_price_above_usd) if self.pause_if_price_above_usd else None,
+            "pauseIfPriceBelowUsd": float(self.pause_if_price_below_usd) if self.pause_if_price_below_usd else None,
+            "minAmountOut": str(self.min_amount_out) if self.min_amount_out else None,
+            "maxTotalSpendUsd": float(self.max_total_spend_usd) if self.max_total_spend_usd else None,
+            "maxExecutions": self.max_executions,
+            "endDate": int(self.end_date.timestamp() * 1000) if self.end_date else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> DCAConfig:
+        return cls(
+            from_token=TokenInfo.from_dict(data["fromToken"]),
+            to_token=TokenInfo.from_dict(data["toToken"]),
+            amount_per_execution_usd=Decimal(str(data["amountPerExecutionUsd"])),
+            frequency=DCAFrequency(data["frequency"]),
+            execution_hour_utc=data.get("executionHourUtc", 9),
+            execution_day_of_week=data.get("executionDayOfWeek"),
+            execution_day_of_month=data.get("executionDayOfMonth"),
+            cron_expression=data.get("cronExpression"),
+            max_slippage_bps=data.get("maxSlippageBps", 100),
+            max_gas_usd=Decimal(str(data.get("maxGasUsd", 10))),
+            skip_if_gas_above_usd=Decimal(str(data["skipIfGasAboveUsd"])) if data.get("skipIfGasAboveUsd") else None,
+            pause_if_price_above_usd=Decimal(str(data["pauseIfPriceAboveUsd"])) if data.get("pauseIfPriceAboveUsd") else None,
+            pause_if_price_below_usd=Decimal(str(data["pauseIfPriceBelowUsd"])) if data.get("pauseIfPriceBelowUsd") else None,
+            min_amount_out=Decimal(data["minAmountOut"]) if data.get("minAmountOut") else None,
+            max_total_spend_usd=Decimal(str(data["maxTotalSpendUsd"])) if data.get("maxTotalSpendUsd") else None,
+            max_executions=data.get("maxExecutions"),
+            end_date=datetime.fromtimestamp(data["endDate"] / 1000) if data.get("endDate") else None,
+        )
+
+
+@dataclass
+class DCAStats:
+    """DCA strategy lifetime statistics."""
+    total_executions: int = 0
+    successful_executions: int = 0
+    failed_executions: int = 0
+    skipped_executions: int = 0
+    total_amount_spent_usd: Decimal = Decimal("0")
+    total_tokens_acquired: Decimal = Decimal("0")
+    average_price_usd: Optional[Decimal] = None
+    last_execution_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+
+
+@dataclass
+class DCAStrategy:
+    """Complete DCA strategy with config and state."""
+    # Identity
+    id: str
+    user_id: str
+    wallet_id: str
+    wallet_address: str
+    name: str
+    description: Optional[str] = None
+
+    # Configuration
+    config: DCAConfig = field(default_factory=lambda: None)  # type: ignore
+
+    # State
+    status: DCAStatus = DCAStatus.DRAFT
+    pause_reason: Optional[str] = None
+    session_key_id: Optional[str] = None
+
+    # Scheduling
+    next_execution_at: Optional[datetime] = None
+    last_execution_at: Optional[datetime] = None
+
+    # Stats
+    stats: DCAStats = field(default_factory=DCAStats)
+
+    # Timestamps
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+    activated_at: Optional[datetime] = None
+
+    @classmethod
+    def from_convex(cls, data: Dict[str, Any]) -> DCAStrategy:
+        """Create from Convex document."""
+        config = DCAConfig(
+            from_token=TokenInfo.from_dict(data["fromToken"]),
+            to_token=TokenInfo.from_dict(data["toToken"]),
+            amount_per_execution_usd=Decimal(str(data["amountPerExecutionUsd"])),
+            frequency=DCAFrequency(data["frequency"]),
+            execution_hour_utc=data.get("executionHourUtc", 9),
+            execution_day_of_week=data.get("executionDayOfWeek"),
+            execution_day_of_month=data.get("executionDayOfMonth"),
+            cron_expression=data.get("cronExpression"),
+            max_slippage_bps=data.get("maxSlippageBps", 100),
+            max_gas_usd=Decimal(str(data.get("maxGasUsd", 10))),
+            skip_if_gas_above_usd=Decimal(str(data["skipIfGasAboveUsd"])) if data.get("skipIfGasAboveUsd") else None,
+            pause_if_price_above_usd=Decimal(str(data["pauseIfPriceAboveUsd"])) if data.get("pauseIfPriceAboveUsd") else None,
+            pause_if_price_below_usd=Decimal(str(data["pauseIfPriceBelowUsd"])) if data.get("pauseIfPriceBelowUsd") else None,
+            min_amount_out=Decimal(data["minAmountOut"]) if data.get("minAmountOut") else None,
+            max_total_spend_usd=Decimal(str(data["maxTotalSpendUsd"])) if data.get("maxTotalSpendUsd") else None,
+            max_executions=data.get("maxExecutions"),
+            end_date=datetime.fromtimestamp(data["endDate"] / 1000) if data.get("endDate") else None,
+        )
+
+        stats = DCAStats(
+            total_executions=data.get("totalExecutions", 0),
+            successful_executions=data.get("successfulExecutions", 0),
+            failed_executions=data.get("failedExecutions", 0),
+            skipped_executions=data.get("skippedExecutions", 0),
+            total_amount_spent_usd=Decimal(str(data.get("totalAmountSpentUsd", 0))),
+            total_tokens_acquired=Decimal(data.get("totalTokensAcquired", "0")),
+            average_price_usd=Decimal(str(data["averagePriceUsd"])) if data.get("averagePriceUsd") else None,
+            last_execution_at=datetime.fromtimestamp(data["lastExecutionAt"] / 1000) if data.get("lastExecutionAt") else None,
+            last_error=data.get("lastError"),
+        )
+
+        return cls(
+            id=data["_id"],
+            user_id=data["userId"],
+            wallet_id=data["walletId"],
+            wallet_address=data["walletAddress"],
+            name=data["name"],
+            description=data.get("description"),
+            config=config,
+            status=DCAStatus(data["status"]),
+            pause_reason=data.get("pauseReason"),
+            session_key_id=data.get("sessionKeyId"),
+            next_execution_at=datetime.fromtimestamp(data["nextExecutionAt"] / 1000) if data.get("nextExecutionAt") else None,
+            last_execution_at=datetime.fromtimestamp(data["lastExecutionAt"] / 1000) if data.get("lastExecutionAt") else None,
+            stats=stats,
+            created_at=datetime.fromtimestamp(data["createdAt"] / 1000),
+            updated_at=datetime.fromtimestamp(data["updatedAt"] / 1000),
+            activated_at=datetime.fromtimestamp(data["activatedAt"] / 1000) if data.get("activatedAt") else None,
+        )
+
+
+@dataclass
+class MarketConditions:
+    """Market conditions at execution time."""
+    token_price_usd: Decimal
+    gas_gwei: Decimal
+    estimated_gas_usd: Decimal
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "tokenPriceUsd": float(self.token_price_usd),
+            "gasGwei": float(self.gas_gwei),
+            "estimatedGasUsd": float(self.estimated_gas_usd),
+        }
+
+
+@dataclass
+class ExecutionQuote:
+    """Swap quote for execution."""
+    input_amount: Decimal
+    expected_output_amount: Decimal
+    minimum_output_amount: Decimal
+    price_impact_bps: int
+    route: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "inputAmount": str(self.input_amount),
+            "expectedOutputAmount": str(self.expected_output_amount),
+            "minimumOutputAmount": str(self.minimum_output_amount),
+            "priceImpactBps": self.price_impact_bps,
+            "route": self.route,
+        }
+
+
+@dataclass
+class DCAExecution:
+    """Individual DCA execution record."""
+    id: str
+    strategy_id: str
+    execution_number: int
+    chain_id: int
+
+    # Status
+    status: ExecutionStatus = ExecutionStatus.PENDING
+    skip_reason: Optional[SkipReason] = None
+
+    # Market conditions
+    market_conditions: Optional[MarketConditions] = None
+    quote: Optional[ExecutionQuote] = None
+
+    # Transaction results
+    tx_hash: Optional[str] = None
+    actual_input_amount: Optional[Decimal] = None
+    actual_output_amount: Optional[Decimal] = None
+    actual_price_usd: Optional[Decimal] = None
+    gas_used: Optional[int] = None
+    gas_price_gwei: Optional[Decimal] = None
+    gas_usd: Optional[Decimal] = None
+
+    # Error info
+    error_message: Optional[str] = None
+    error_code: Optional[str] = None
+
+    # Timing
+    scheduled_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    @classmethod
+    def from_convex(cls, data: Dict[str, Any]) -> DCAExecution:
+        """Create from Convex document."""
+        market_conditions = None
+        if data.get("marketConditions"):
+            mc = data["marketConditions"]
+            market_conditions = MarketConditions(
+                token_price_usd=Decimal(str(mc["tokenPriceUsd"])),
+                gas_gwei=Decimal(str(mc["gasGwei"])),
+                estimated_gas_usd=Decimal(str(mc["estimatedGasUsd"])),
+            )
+
+        quote = None
+        if data.get("quote"):
+            q = data["quote"]
+            quote = ExecutionQuote(
+                input_amount=Decimal(q["inputAmount"]),
+                expected_output_amount=Decimal(q["expectedOutputAmount"]),
+                minimum_output_amount=Decimal(q["minimumOutputAmount"]),
+                price_impact_bps=q["priceImpactBps"],
+                route=q.get("route"),
+            )
+
+        return cls(
+            id=data["_id"],
+            strategy_id=data["strategyId"],
+            execution_number=data["executionNumber"],
+            chain_id=data["chainId"],
+            status=ExecutionStatus(data["status"]),
+            skip_reason=SkipReason(data["skipReason"]) if data.get("skipReason") else None,
+            market_conditions=market_conditions,
+            quote=quote,
+            tx_hash=data.get("txHash"),
+            actual_input_amount=Decimal(data["actualInputAmount"]) if data.get("actualInputAmount") else None,
+            actual_output_amount=Decimal(data["actualOutputAmount"]) if data.get("actualOutputAmount") else None,
+            actual_price_usd=Decimal(str(data["actualPriceUsd"])) if data.get("actualPriceUsd") else None,
+            gas_used=data.get("gasUsed"),
+            gas_price_gwei=Decimal(str(data["gasPriceGwei"])) if data.get("gasPriceGwei") else None,
+            gas_usd=Decimal(str(data["gasUsd"])) if data.get("gasUsd") else None,
+            error_message=data.get("errorMessage"),
+            error_code=data.get("errorCode"),
+            scheduled_at=datetime.fromtimestamp(data["scheduledAt"] / 1000),
+            started_at=datetime.fromtimestamp(data["startedAt"] / 1000) if data.get("startedAt") else None,
+            completed_at=datetime.fromtimestamp(data["completedAt"] / 1000) if data.get("completedAt") else None,
+        )
+
+
+@dataclass
+class SessionKeyRequirements:
+    """Session key requirements for a DCA strategy."""
+    permissions: List[str]  # ["swap"]
+    value_per_tx_usd: Decimal
+    total_value_usd: Decimal
+    token_allowlist: List[str]
+    chain_allowlist: List[int]
+    duration_days: int = 30
+
+    @classmethod
+    def for_dca_strategy(cls, config: DCAConfig, executions_estimate: int = 52) -> SessionKeyRequirements:
+        """Generate session key requirements for a DCA config.
+
+        Args:
+            config: DCA configuration
+            executions_estimate: Estimated number of executions (default 52 for weekly over 1 year)
+        """
+        # Add 10% buffer to amount for slippage
+        value_per_tx = config.amount_per_execution_usd * Decimal("1.1")
+
+        # Total value based on max spend or estimated executions
+        if config.max_total_spend_usd:
+            total_value = config.max_total_spend_usd * Decimal("1.1")
+        else:
+            total_value = value_per_tx * executions_estimate
+
+        return cls(
+            permissions=["swap"],
+            value_per_tx_usd=value_per_tx,
+            total_value_usd=total_value,
+            token_allowlist=[config.from_token.symbol, config.to_token.symbol],
+            chain_allowlist=[config.from_token.chain_id],
+            duration_days=30,  # Renew monthly
+        )

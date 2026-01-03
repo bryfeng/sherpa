@@ -239,7 +239,13 @@ class NewsFetcherService:
                     {"items": convex_items},
                 )
 
-                stored += sum(1 for r in result if r.get("created", False))
+                # Handle None or list result
+                if result is None:
+                    stored += len(convex_items)  # Assume success if no error
+                elif isinstance(result, list):
+                    stored += sum(1 for r in result if r.get("created", False))
+                else:
+                    stored += len(convex_items)
 
             except Exception as e:
                 logger.error(f"Error storing batch: {e}")
