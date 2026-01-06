@@ -187,7 +187,7 @@ async def trigger_news_processing(
 
     Called by Convex cron job every 5 minutes.
     """
-    from ..workers.news_processor_worker import run_news_processor_worker
+    from ..workers.news_processor_worker import run_news_processor_worker, WorkerConfig
 
     # Validate internal API key
     if x_internal_key != settings.convex_internal_api_key:
@@ -196,16 +196,17 @@ async def trigger_news_processing(
     try:
         convex = get_convex_client()
 
-        # Run the processor
+        # Run the processor with config
+        config = WorkerConfig(max_items_per_run=limit)
         result = await run_news_processor_worker(
             convex_client=convex,
-            max_items=limit,
+            config=config,
         )
 
         return FetchResult(
-            success=result.get("success", False),
-            processed=result.get("processed", 0),
-            errors=result.get("errors", 0),
+            success=result.items_failed == 0,
+            processed=result.items_processed,
+            errors=result.items_failed,
         )
     except Exception as e:
         logger.error(f"Error in news processing: {e}")
