@@ -194,7 +194,7 @@ def get_dca_service() -> DCAService:
 
 def verify_internal_key(x_internal_key: str = Header(None, alias="X-Internal-Key")) -> bool:
     """Verify internal API key for cron-triggered endpoints."""
-    if not x_internal_key or x_internal_key != settings.internal_api_key:
+    if not x_internal_key or x_internal_key != settings.convex_internal_api_key:
         raise HTTPException(status_code=401, detail="Invalid internal API key")
     return True
 

@@ -152,7 +152,7 @@ async def trigger_news_fetch(
     Called by Convex cron job every 15 minutes.
     """
     # Validate internal API key
-    if x_internal_key != settings.internal_api_key:
+    if x_internal_key != settings.convex_internal_api_key:
         raise HTTPException(status_code=401, detail="Invalid internal API key")
 
     try:
@@ -190,7 +190,7 @@ async def trigger_news_processing(
     from ..workers.news_processor_worker import run_news_processor_worker
 
     # Validate internal API key
-    if x_internal_key != settings.internal_api_key:
+    if x_internal_key != settings.convex_internal_api_key:
         raise HTTPException(status_code=401, detail="Invalid internal API key")
 
     try:
