@@ -262,6 +262,8 @@ class NewsFetcherService:
                 "news:deleteExpired",
                 {"batchSize": 100},
             )
+            if result is None:
+                return 0
             deleted = result.get("deleted", 0)
 
             if deleted > 0:

@@ -162,12 +162,14 @@ async def trigger_news_fetch(
         service = NewsFetcherService(convex_client=convex)
         stats = await service.run_fetch_cycle()
 
+        errors = stats.get("errors", [])
+        error_count = len(errors) if isinstance(errors, list) else errors
         return FetchResult(
             success=True,
-            fetched=stats.get("fetched", 0),
-            new=stats.get("new", 0),
-            processed=stats.get("processed", 0),
-            errors=stats.get("errors", 0),
+            fetched=stats.get("items_fetched", 0),
+            new=stats.get("items_new", 0),
+            processed=stats.get("items_processed", 0),
+            errors=error_count,
         )
     except Exception as e:
         logger.error(f"Error in news fetch cycle: {e}")
