@@ -17,8 +17,8 @@ from ..config import settings
 from ..types import ChatRequest, ChatResponse
 from ..providers.llm import get_llm_provider
 from ..providers.llm.base import LLMResponse
-from ..tools.defillama import get_tvl_series
 from ..core.agent import Agent, PersonaManager, ContextManager
+from ..db.convex_client import get_convex_client
 
 # Cache of agents keyed by provider/model so multiple LLMs can coexist
 _agent_cache: Dict[str, Agent] = {}
@@ -45,9 +45,17 @@ def _create_agent(provider_name: Optional[str] = None, model: Optional[str] = No
     resolved_provider = _normalize_provider(provider_name)
     resolved_model = llm_provider.model
 
+    # Get Convex client for conversation persistence
+    try:
+        convex_client = get_convex_client()
+    except Exception as e:
+        _logger.warning(f"Convex client not available, conversations will not persist: {e}")
+        convex_client = None
+
     persona_manager = PersonaManager()
     context_manager = ContextManager(
         llm_provider=llm_provider,
+        convex_client=convex_client,
         max_tokens=settings.context_window_size,
     )
 
@@ -170,6 +178,7 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
             conversation_id = f"guest-{uuid.uuid4().hex[:8]}"
 
         try:
+            # Check for style commands first
             style_response = await agent._handle_style_processing(  # pylint: disable=protected-access
                 request.messages,
                 conversation_id,
@@ -183,33 +192,42 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
                 yield _sse_done()
                 return
 
+            # Determine persona
             persona_name = await agent._determine_persona(  # pylint: disable=protected-access
                 request.messages,
                 conversation_id,
                 getattr(request, 'persona', None),
             )
 
+            # Ensure portfolio context is loaded
             await agent._ensure_portfolio_context(conversation_id, request)  # pylint: disable=protected-access
 
+            # Prepare context messages
             context_messages = await agent._prepare_context(  # pylint: disable=protected-access
                 request,
                 conversation_id,
                 persona_name,
             )
 
-            tool_data = await agent._execute_tools(  # pylint: disable=protected-access
+            # ============================================================
+            # NEW: Use ReAct loop for LLM-driven tool calling
+            # This allows the LLM to decide which tools to call based on
+            # semantic understanding, rather than keyword matching
+            # ============================================================
+            llm_response, tool_data = await agent._run_react_loop(  # pylint: disable=protected-access
+                context_messages,
                 request,
                 conversation_id,
             )
-            if not isinstance(tool_data, dict):
-                tool_data = {}
 
+            # Get wallet address from tool_data or extract it
             wallet_address = tool_data.get('_address')
             if wallet_address is None:
                 wallet_address = agent._extract_wallet_address(request)  # pylint: disable=protected-access
                 if wallet_address:
                     tool_data['_address'] = wallet_address
 
+            # Handle bridge quotes (special case, keyword-based for now)
             bridge_quote = await agent.bridge_manager.maybe_handle(  # type: ignore[attr-defined]
                 request,
                 conversation_id,
@@ -219,12 +237,15 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
             if bridge_quote:
                 tool_data['bridge_quote'] = bridge_quote
 
+            # Get portfolio tokens for swap handling
             portfolio_tokens = None
             portfolio_entry = tool_data.get('portfolio') if isinstance(tool_data, dict) else None
             if isinstance(portfolio_entry, dict):
-                data = portfolio_entry.get('data')
-                if isinstance(data, dict):
-                    portfolio_tokens = data.get('tokens')
+                result = portfolio_entry.get('result')
+                if isinstance(result, dict):
+                    data = result.get('data')
+                    if isinstance(data, dict):
+                        portfolio_tokens = data.get('tokens')
             if portfolio_tokens is None and agent.context_manager:
                 try:
                     conversation = agent.context_manager._conversations.get(conversation_id)  # type: ignore[attr-defined]
@@ -233,6 +254,7 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
                 except Exception:  # pragma: no cover - best-effort only
                     portfolio_tokens = None
 
+            # Handle swap quotes (special case, keyword-based for now)
             swap_quote = await agent.swap_manager.maybe_handle(  # type: ignore[attr-defined]
                 request,
                 conversation_id,
@@ -243,53 +265,48 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
             if swap_quote:
                 tool_data['swap_quote'] = swap_quote
 
-            if agent._needs_tvl_data(request):  # pylint: disable=protected-access
-                try:
-                    params = agent._extract_tvl_params(request)  # pylint: disable=protected-access
-                    ts, tvl = await get_tvl_series(protocol=params['protocol'], window=params['window'])
-                    stats = agent._compute_tvl_stats(ts, tvl)  # pylint: disable=protected-access
-                    tool_data['defillama_tvl'] = {
-                        'protocol': params['protocol'],
-                        'window': params['window'],
-                        'timestamps': ts,
-                        'tvl': tvl,
-                        'stats': stats,
-                    }
-                    if agent.context_manager:
-                        try:
-                            await agent.context_manager.set_active_focus(  # type: ignore[attr-defined]
-                                conversation_id,
-                                {
-                                    'entity': params['protocol'],
-                                    'protocol': params['protocol'],
-                                    'metric': 'tvl',
-                                    'window': params['window'],
-                                    'chain': getattr(request, 'chain', None),
-                                    'stats': stats,
-                                    'source': 'defillama',
-                                },
-                            )
-                        except Exception as focus_exc:  # pragma: no cover - logging only
-                            agent.logger.warning('Failed setting episodic focus: %s', focus_exc)
-                except Exception as tvl_exc:  # pragma: no cover - defensive logging
-                    agent.logger.error('DefiLlama TVL fetch error: %s', tvl_exc)
+            # ============================================================
+            # Stream the response text in chunks for better UX
+            # The ReAct loop already completed, so we stream the result
+            # ============================================================
+            response_text = llm_response.content or ""
 
-            accumulated_text = ""
+            # Handle case where LLM didn't generate text (e.g., all tool calls failed)
+            if not response_text:
+                # Check if there were tool errors
+                tool_errors = []
+                for tool_name, tool_result in tool_data.items():
+                    if tool_name.startswith('_'):
+                        continue
+                    if isinstance(tool_result, dict):
+                        result = tool_result.get('result', {})
+                        if isinstance(result, dict) and not result.get('success', True):
+                            tool_errors.append(f"{tool_name}: {result.get('error', 'Unknown error')}")
 
-            async for delta in agent._stream_llm_response(  # pylint: disable=protected-access
-                context_messages,
-                tool_data,
-                conversation_id,
-            ):
-                if not delta:
-                    continue
-                accumulated_text += delta
+                if tool_errors:
+                    response_text = (
+                        "I encountered some issues while processing your request:\n\n"
+                        + "\n".join(f"- {err}" for err in tool_errors)
+                        + "\n\nPlease try again or let me know if you need help with something else."
+                    )
+                else:
+                    response_text = "I processed your request but didn't generate a response. Please try again."
+
+                # Update llm_response content for format_response
+                llm_response.content = response_text
+
+            chunk_size = 20  # Characters per chunk for smooth streaming
+
+            for i in range(0, len(response_text), chunk_size):
+                chunk = response_text[i:i + chunk_size]
                 yield _sse_event({
                     'type': 'delta',
-                    'delta': delta,
+                    'delta': chunk,
                 })
+                # Small delay for smoother streaming effect (optional)
+                # await asyncio.sleep(0.01)
 
-            llm_response = LLMResponse(content=accumulated_text)
+            # Format the final response
             final_response = await agent._format_response(  # pylint: disable=protected-access
                 llm_response,
                 tool_data,
@@ -298,12 +315,14 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
                 start_time,
             )
 
+            # Update conversation state
             await agent._update_conversation_state(  # pylint: disable=protected-access
                 conversation_id,
                 request,
                 final_response,
             )
 
+            # Send final response with panels and metadata
             chat_response = agent.to_chat_response(final_response)
             yield _sse_event({
                 'type': 'final',

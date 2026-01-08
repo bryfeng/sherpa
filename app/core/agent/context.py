@@ -3,17 +3,23 @@ Context Management System
 
 This module manages conversation history, context compression, and memory
 for maintaining coherent conversations across multiple interactions.
+
+Now with Convex persistence for durable conversation storage.
 """
 
-from typing import Dict, List, Optional, Any, Tuple, Deque
+from typing import Dict, List, Optional, Any, Tuple, Deque, TYPE_CHECKING
 from pydantic import BaseModel, Field
 import logging
 from datetime import datetime, timedelta
 import json
 import uuid
 from collections import deque
+import asyncio
 
 from ...providers.llm.base import LLMProvider
+
+if TYPE_CHECKING:
+    from ...db.convex_client import ConvexClient
 
 
 class ConversationMessage(BaseModel):
@@ -29,7 +35,7 @@ class ConversationMessage(BaseModel):
 
 class ConversationContext(BaseModel):
     """Complete conversation context"""
-    
+
     conversation_id: str
     messages: List[ConversationMessage] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)
@@ -44,31 +50,37 @@ class ConversationContext(BaseModel):
     title: Optional[str] = Field(default=None, description="Optional user-defined title")
     archived: bool = Field(default=False, description="Whether conversation is archived")
     message_count: int = Field(default=0, description="Number of messages recorded")
+    # Convex persistence
+    convex_id: Optional[str] = Field(default=None, description="Convex conversation ID for persistence")
+    wallet_id: Optional[str] = Field(default=None, description="Convex wallet ID")
 
 
 class ContextManager:
-    """Manages conversation context, history, and memory"""
-    
+    """Manages conversation context, history, and memory with optional Convex persistence"""
+
     def __init__(
         self,
         llm_provider: Optional[LLMProvider] = None,
+        convex_client: Optional["ConvexClient"] = None,
         max_tokens: int = 8000,
         compression_threshold: int = 6000,
         max_history_messages: int = 50,
         logger: Optional[logging.Logger] = None
     ):
         self.llm_provider = llm_provider
+        self.convex_client = convex_client
         self.max_tokens = max_tokens
         self.compression_threshold = compression_threshold
         self.max_history_messages = max_history_messages
         self.logger = logger or logging.getLogger(__name__)
-        
-        # In-memory storage for conversations
-        # In production, this should be replaced with persistent storage
+
+        # In-memory cache for conversations (also persisted to Convex if client available)
         self._conversations: Dict[str, ConversationContext] = {}
         # Index conversations by owner address (lowercased) → most-recent-first deque of IDs
         self._by_address: Dict[str, Deque[str]] = {}
         self._user_preferences: Dict[str, Dict[str, Any]] = {}
+        # Track pending persistence tasks
+        self._pending_tasks: List[asyncio.Task] = []
 
     # -----------------------------
     # Conversation ID management
@@ -85,10 +97,130 @@ class ContextManager:
         # Simple short ID from UUID; avoids external deps
         return uuid.uuid4().hex[:8]
 
+    # -----------------------------
+    # Convex Persistence
+    # -----------------------------
+    async def _ensure_wallet_id(self, address: str) -> Optional[str]:
+        """Get or create wallet in Convex, return wallet_id."""
+        if not self.convex_client or not address:
+            return None
+        try:
+            result = await self.convex_client.mutation(
+                "users:getOrCreateByWallet",
+                {"address": address.lower(), "chain": "ethereum"},
+            )
+            wallet = result.get("wallet") if result else None
+            return wallet.get("_id") if wallet else None
+        except Exception as e:
+            self.logger.warning(f"Failed to get/create wallet for {address}: {e}")
+            return None
+
+    async def _persist_conversation_to_convex(self, ctx: ConversationContext) -> None:
+        """Create or update conversation in Convex."""
+        if not self.convex_client or not ctx.owner_address:
+            return
+
+        try:
+            # Get wallet ID if not already set
+            if not ctx.wallet_id:
+                ctx.wallet_id = await self._ensure_wallet_id(ctx.owner_address)
+
+            if not ctx.wallet_id:
+                self.logger.warning(f"No wallet_id for conversation {ctx.conversation_id}")
+                return
+
+            # Create conversation in Convex if not already created
+            if not ctx.convex_id:
+                convex_id = await self.convex_client.mutation(
+                    "conversations:create",
+                    {"walletId": ctx.wallet_id, "title": ctx.title},
+                )
+                ctx.convex_id = convex_id
+                self.logger.info(f"Created Convex conversation {convex_id} for {ctx.conversation_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to persist conversation to Convex: {e}")
+
+    async def _persist_message_to_convex(
+        self,
+        ctx: ConversationContext,
+        role: str,
+        content: str,
+        token_count: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Add a message to Convex conversation."""
+        if not self.convex_client or not ctx.convex_id:
+            return
+
+        try:
+            await self.convex_client.mutation(
+                "conversations:addMessage",
+                {
+                    "conversationId": ctx.convex_id,
+                    "role": role,
+                    "content": content,
+                    "tokenCount": token_count,
+                    "metadata": metadata,
+                },
+            )
+            self.logger.debug(f"Persisted {role} message to Convex conversation {ctx.convex_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to persist message to Convex: {e}")
+
+    def _schedule_persistence(self, coro) -> None:
+        """Schedule an async persistence task without blocking."""
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(coro)
+            self._pending_tasks.append(task)
+            # Clean up completed tasks
+            self._pending_tasks = [t for t in self._pending_tasks if not t.done()]
+        except RuntimeError:
+            # No running loop, run synchronously
+            try:
+                asyncio.run(coro)
+            except Exception as e:
+                self.logger.warning(f"Failed to run persistence task: {e}")
+
+    async def load_conversations_from_convex(self, address: str) -> List[Dict[str, Any]]:
+        """Load existing conversations from Convex for an address."""
+        if not self.convex_client:
+            return []
+
+        try:
+            conversations = await self.convex_client.query(
+                "conversations:listByWalletAddress",
+                {"address": address.lower(), "includeArchived": False},
+            )
+            return conversations or []
+        except Exception as e:
+            self.logger.error(f"Failed to load conversations from Convex: {e}")
+            return []
+
+    async def load_conversation_messages(self, convex_conversation_id: str) -> Optional[Dict[str, Any]]:
+        """Load a conversation with messages from Convex."""
+        if not self.convex_client:
+            return None
+
+        try:
+            result = await self.convex_client.query(
+                "conversations:getWithMessages",
+                {"conversationId": convex_conversation_id},
+            )
+            return result
+        except Exception as e:
+            self.logger.error(f"Failed to load conversation messages from Convex: {e}")
+            return None
+
+    # -----------------------------
+    # Conversation Registration
+    # -----------------------------
     def _register_conversation(self, conversation_id: str, owner_address: Optional[str]) -> None:
         """Ensure a ConversationContext exists and is indexed by address."""
-        if conversation_id not in self._conversations:
+        is_new = conversation_id not in self._conversations
+        if is_new:
             self._conversations[conversation_id] = ConversationContext(conversation_id=conversation_id)
+
         if owner_address:
             addr = self._normalize_address(owner_address)
             ctx = self._conversations[conversation_id]
@@ -102,6 +234,10 @@ class ContextManager:
             except ValueError:
                 pass
             dq.appendleft(conversation_id)
+
+            # Persist new conversation to Convex (async, non-blocking)
+            if is_new and self.convex_client and not ctx.convex_id:
+                self._schedule_persistence(self._persist_conversation_to_convex(ctx))
 
     def create_conversation_id(self, address: Optional[str]) -> str:
         """Create a new conversation ID scoped to address or guest."""
@@ -193,24 +329,39 @@ class ContextManager:
         context.messages.append(conv_message)
         context.last_activity = datetime.now()
         context.message_count += 1
-        
+
         if conv_message.tokens:
             context.total_tokens += conv_message.tokens
-        
+
+        # Persist message to Convex
+        if self.convex_client and context.owner_address:
+            # Ensure conversation exists in Convex first
+            if not context.convex_id:
+                await self._persist_conversation_to_convex(context)
+            # Then persist the message
+            if context.convex_id:
+                await self._persist_message_to_convex(
+                    context,
+                    role=conv_message.role,
+                    content=conv_message.content,
+                    token_count=conv_message.tokens,
+                    metadata=conv_message.metadata if conv_message.metadata else None,
+                )
+
         # Check if context needs compression
         if context.total_tokens > self.compression_threshold:
             await self._compress_context(context)
-        
+
         # Limit message history length
         if len(context.messages) > self.max_history_messages:
             # Remove oldest messages (keep recent ones)
             removed_messages = context.messages[:len(context.messages) - self.max_history_messages]
             context.messages = context.messages[-self.max_history_messages:]
-            
+
             # Update token count
             removed_tokens = sum(msg.tokens or 0 for msg in removed_messages)
             context.total_tokens -= removed_tokens
-            
+
             self.logger.info(f"Trimmed {len(removed_messages)} old messages from conversation {conversation_id}")
     
     async def get_context(self, conversation_id: str, include_portfolio: bool = True) -> str:

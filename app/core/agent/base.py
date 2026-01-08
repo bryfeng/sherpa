@@ -444,10 +444,23 @@ class Agent:
             for tc in response.tool_calls:
                 tool = self.tool_registry.get_tool(tc.name)
                 if tool and tool.requires_address and wallet_address:
-                    if 'wallet_address' not in tc.arguments:
+                    # Get parameter names from tool definition
+                    tool_param_names = {p.name for p in tool.definition.parameters}
+
+                    if 'wallet_address' not in tc.arguments and 'wallet_address' in tool_param_names:
                         tc.arguments['wallet_address'] = wallet_address
+
+                    # Only inject chain if tool accepts it
                     if 'chain' not in tc.arguments and request.chain:
-                        tc.arguments['chain'] = request.chain
+                        if 'chain' in tool_param_names:
+                            tc.arguments['chain'] = request.chain
+                        elif 'chain_id' in tool_param_names:
+                            # Map chain name to chain_id
+                            chain_map = {
+                                "ethereum": 1, "polygon": 137, "base": 8453,
+                                "arbitrum": 42161, "optimism": 10,
+                            }
+                            tc.arguments['chain_id'] = chain_map.get(request.chain.lower(), 1)
 
             # Execute all tool calls in parallel
             results = await self.tool_executor.execute_parallel(response.tool_calls)

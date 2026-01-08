@@ -1584,21 +1584,48 @@ class ToolRegistry:
         chain_id: int = 1,
         max_slippage_percent: float = 1.0,
         max_gas_usd: float = 10.0,
+        chain: Optional[str] = None,  # Accept 'chain' param injected by ReAct loop
+        **kwargs,  # Accept any other injected params
     ) -> Dict[str, Any]:
         """Handle creating a new strategy."""
+        # Map chain name to chain_id if provided
+        if chain and chain_id == 1:  # Only override if chain_id is default
+            chain_map = {
+                "ethereum": 1,
+                "polygon": 137,
+                "base": 8453,
+                "arbitrum": 42161,
+                "optimism": 10,
+                "solana": -1,  # Special case
+            }
+            chain_id = chain_map.get(chain.lower(), 1)
         from ...db import get_convex_client
 
         try:
             convex = get_convex_client()
 
-            # Get wallet and user info
-            wallet = await convex.query(
-                "wallets:getByAddress",
-                {"address": wallet_address.lower()},
+            # Determine chain for lookup
+            chain_name = chain or "ethereum"
+            if chain_id and chain_id != 1:
+                chain_id_to_name = {137: "polygon", 8453: "base", 42161: "arbitrum", 10: "optimism"}
+                chain_name = chain_id_to_name.get(chain_id, "ethereum")
+
+            # Get or create user and wallet in one call
+            # This handles all the registration logic automatically
+            result = await convex.mutation(
+                "users:getOrCreateByWallet",
+                {"address": wallet_address.lower(), "chain": chain_name},
             )
 
-            if not wallet:
-                return {"success": False, "error": "Wallet not found. Please connect your wallet first."}
+            wallet = result.get("wallet") if result else None
+            user = result.get("user") if result else None
+            is_new = result.get("isNew", False) if result else False
+
+            if is_new:
+                self.logger.info(f"Auto-registered new user and wallet for {wallet_address}")
+
+            if not wallet or not user:
+                return {"success": False, "error": "Could not find or create wallet. Please try again."}
 
             # Validate config based on strategy type
             if strategy_type == "dca":
@@ -1619,7 +1646,7 @@ class ToolRegistry:
             max_slippage_bps = int(max_slippage_percent * 100)
 
             args = {
-                "userId": wallet.get("userId"),
+                "userId": user.get("_id"),
                 "walletAddress": wallet_address.lower(),
                 "name": name,
                 "strategyType": strategy_type,
