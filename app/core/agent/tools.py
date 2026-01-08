@@ -531,14 +531,16 @@ class ToolRegistry:
         # =====================================================================
 
         self.register(
-            "list_dca_strategies",
+            "list_strategies",
             ToolDefinition(
-                name="list_dca_strategies",
+                name="list_strategies",
                 description=(
-                    "List all DCA (Dollar Cost Averaging) strategies for a wallet. "
-                    "Returns strategy names, status, tokens being traded, amounts, and schedules. "
-                    "Use this when the user asks about their DCA strategies, automated trading, "
-                    "recurring buys, or scheduled investments."
+                    "List all automated trading strategies for a wallet. "
+                    "Returns strategy names, types, status, and configurations. "
+                    "Strategy types include: dca (dollar cost averaging), rebalance, "
+                    "limit_order, stop_loss, take_profit, and more. "
+                    "Use this when the user asks about their strategies, automated trading, "
+                    "or scheduled investments."
                 ),
                 parameters=[
                     ToolParameter(
@@ -548,24 +550,31 @@ class ToolRegistry:
                         required=True,
                     ),
                     ToolParameter(
+                        name="strategy_type",
+                        type=ToolParameterType.STRING,
+                        description="Filter by strategy type",
+                        required=False,
+                        enum=["dca", "rebalance", "limit_order", "stop_loss", "take_profit"],
+                    ),
+                    ToolParameter(
                         name="status",
                         type=ToolParameterType.STRING,
                         description="Filter by status",
                         required=False,
-                        enum=["draft", "pending_session", "active", "paused", "completed", "failed", "expired"],
+                        enum=["draft", "active", "paused", "completed", "failed", "expired"],
                     ),
                 ],
             ),
-            self._handle_list_dca_strategies,
+            self._handle_list_strategies,
             requires_address=True,
         )
 
         self.register(
-            "get_dca_strategy",
+            "get_strategy",
             ToolDefinition(
-                name="get_dca_strategy",
+                name="get_strategy",
                 description=(
-                    "Get detailed information about a specific DCA strategy including "
+                    "Get detailed information about a specific strategy including "
                     "configuration, execution stats, and recent execution history. "
                     "Use this when the user asks for details about a specific strategy."
                 ),
@@ -573,22 +582,27 @@ class ToolRegistry:
                     ToolParameter(
                         name="strategy_id",
                         type=ToolParameterType.STRING,
-                        description="The ID of the DCA strategy to get",
+                        description="The ID of the strategy to get",
                         required=True,
                     ),
                 ],
             ),
-            self._handle_get_dca_strategy,
+            self._handle_get_strategy,
         )
 
         self.register(
-            "create_dca_strategy",
+            "create_strategy",
             ToolDefinition(
-                name="create_dca_strategy",
+                name="create_strategy",
                 description=(
-                    "Create a new DCA (Dollar Cost Averaging) strategy for automated recurring trades. "
-                    "Sets up a schedule to buy a target token using a source token at regular intervals. "
-                    "Use this when the user wants to set up a DCA, recurring buy, or automated investment."
+                    "Create a new automated trading strategy. "
+                    "Supports multiple strategy types: "
+                    "- dca: Dollar cost averaging - buy tokens at regular intervals "
+                    "- rebalance: Maintain target portfolio allocations "
+                    "- limit_order: Execute when price reaches target "
+                    "- stop_loss: Sell when price drops below threshold "
+                    "- take_profit: Sell when price rises above target "
+                    "Use this when the user wants to set up any automated trading strategy."
                 ),
                 parameters=[
                     ToolParameter(
@@ -600,33 +614,26 @@ class ToolRegistry:
                     ToolParameter(
                         name="name",
                         type=ToolParameterType.STRING,
-                        description="Name for the strategy (e.g., 'Weekly ETH DCA')",
+                        description="Name for the strategy (e.g., 'Weekly ETH Buy', 'BTC Stop Loss')",
                         required=True,
                     ),
                     ToolParameter(
-                        name="from_token_symbol",
+                        name="strategy_type",
                         type=ToolParameterType.STRING,
-                        description="Symbol of token to spend (e.g., 'USDC')",
+                        description="Type of strategy to create",
                         required=True,
+                        enum=["dca", "rebalance", "limit_order", "stop_loss", "take_profit"],
                     ),
                     ToolParameter(
-                        name="to_token_symbol",
-                        type=ToolParameterType.STRING,
-                        description="Symbol of token to buy (e.g., 'ETH')",
+                        name="config",
+                        type=ToolParameterType.OBJECT,
+                        description=(
+                            "Strategy configuration object. Fields depend on strategy_type: "
+                            "DCA: {from_token, to_token, amount_usd, frequency} "
+                            "Rebalance: {target_allocations, threshold_percent} "
+                            "Limit/Stop/TakeProfit: {token, trigger_price_usd, amount, side}"
+                        ),
                         required=True,
-                    ),
-                    ToolParameter(
-                        name="amount_per_execution_usd",
-                        type=ToolParameterType.NUMBER,
-                        description="Amount in USD to spend per execution",
-                        required=True,
-                    ),
-                    ToolParameter(
-                        name="frequency",
-                        type=ToolParameterType.STRING,
-                        description="How often to execute",
-                        required=True,
-                        enum=["hourly", "daily", "weekly", "biweekly", "monthly"],
                     ),
                     ToolParameter(
                         name="chain_id",
@@ -638,7 +645,7 @@ class ToolRegistry:
                     ToolParameter(
                         name="max_slippage_percent",
                         type=ToolParameterType.NUMBER,
-                        description="Maximum slippage tolerance in percent (e.g., 1.0 for 1%)",
+                        description="Maximum slippage tolerance in percent",
                         required=False,
                         default=1.0,
                     ),
@@ -649,31 +656,19 @@ class ToolRegistry:
                         required=False,
                         default=10.0,
                     ),
-                    ToolParameter(
-                        name="max_total_spend_usd",
-                        type=ToolParameterType.NUMBER,
-                        description="Total budget - stop when this amount is spent",
-                        required=False,
-                    ),
-                    ToolParameter(
-                        name="max_executions",
-                        type=ToolParameterType.INTEGER,
-                        description="Maximum number of executions before stopping",
-                        required=False,
-                    ),
                 ],
             ),
-            self._handle_create_dca_strategy,
+            self._handle_create_strategy,
             requires_address=True,
         )
 
         self.register(
-            "pause_dca_strategy",
+            "pause_strategy",
             ToolDefinition(
-                name="pause_dca_strategy",
+                name="pause_strategy",
                 description=(
-                    "Pause an active DCA strategy. The strategy can be resumed later. "
-                    "Use this when the user wants to temporarily stop a DCA strategy."
+                    "Pause an active strategy. The strategy can be resumed later. "
+                    "Use this when the user wants to temporarily stop any strategy."
                 ),
                 parameters=[
                     ToolParameter(
@@ -690,16 +685,16 @@ class ToolRegistry:
                     ),
                 ],
             ),
-            self._handle_pause_dca_strategy,
+            self._handle_pause_strategy,
         )
 
         self.register(
-            "resume_dca_strategy",
+            "resume_strategy",
             ToolDefinition(
-                name="resume_dca_strategy",
+                name="resume_strategy",
                 description=(
-                    "Resume a paused DCA strategy. Schedules the next execution. "
-                    "Use this when the user wants to restart a paused DCA strategy."
+                    "Resume a paused strategy. Schedules the next execution. "
+                    "Use this when the user wants to restart a paused strategy."
                 ),
                 parameters=[
                     ToolParameter(
@@ -710,16 +705,16 @@ class ToolRegistry:
                     ),
                 ],
             ),
-            self._handle_resume_dca_strategy,
+            self._handle_resume_strategy,
         )
 
         self.register(
-            "stop_dca_strategy",
+            "stop_strategy",
             ToolDefinition(
-                name="stop_dca_strategy",
+                name="stop_strategy",
                 description=(
-                    "Stop/complete a DCA strategy permanently. "
-                    "Use this when the user wants to end a DCA strategy."
+                    "Stop/complete a strategy permanently. "
+                    "Use this when the user wants to end any strategy."
                 ),
                 parameters=[
                     ToolParameter(
@@ -730,17 +725,17 @@ class ToolRegistry:
                     ),
                 ],
             ),
-            self._handle_stop_dca_strategy,
+            self._handle_stop_strategy,
         )
 
         self.register(
-            "get_dca_executions",
+            "get_strategy_executions",
             ToolDefinition(
-                name="get_dca_executions",
+                name="get_strategy_executions",
                 description=(
-                    "Get the execution history for a DCA strategy. "
+                    "Get the execution history for a strategy. "
                     "Returns past trades, amounts, prices, and any errors. "
-                    "Use this when the user asks about their DCA history or past executions."
+                    "Use this when the user asks about strategy history or past executions."
                 ),
                 parameters=[
                     ToolParameter(
@@ -758,16 +753,16 @@ class ToolRegistry:
                     ),
                 ],
             ),
-            self._handle_get_dca_executions,
+            self._handle_get_strategy_executions,
         )
 
         self.register(
-            "update_dca_strategy",
+            "update_strategy",
             ToolDefinition(
-                name="update_dca_strategy",
+                name="update_strategy",
                 description=(
-                    "Update configuration of a DCA strategy (only when paused or draft). "
-                    "Use this when the user wants to change their DCA settings."
+                    "Update configuration of a strategy (only when paused or draft). "
+                    "Use this when the user wants to change strategy settings."
                 ),
                 parameters=[
                     ToolParameter(
@@ -777,17 +772,10 @@ class ToolRegistry:
                         required=True,
                     ),
                     ToolParameter(
-                        name="amount_per_execution_usd",
-                        type=ToolParameterType.NUMBER,
-                        description="New amount per execution in USD",
+                        name="config",
+                        type=ToolParameterType.OBJECT,
+                        description="Updated configuration fields (strategy-type specific)",
                         required=False,
-                    ),
-                    ToolParameter(
-                        name="frequency",
-                        type=ToolParameterType.STRING,
-                        description="New execution frequency",
-                        required=False,
-                        enum=["hourly", "daily", "weekly", "biweekly", "monthly"],
                     ),
                     ToolParameter(
                         name="max_slippage_percent",
@@ -801,21 +789,9 @@ class ToolRegistry:
                         description="New max gas in USD",
                         required=False,
                     ),
-                    ToolParameter(
-                        name="max_total_spend_usd",
-                        type=ToolParameterType.NUMBER,
-                        description="New total budget in USD",
-                        required=False,
-                    ),
-                    ToolParameter(
-                        name="max_executions",
-                        type=ToolParameterType.INTEGER,
-                        description="New max number of executions",
-                        required=False,
-                    ),
                 ],
             ),
-            self._handle_update_dca_strategy,
+            self._handle_update_strategy,
         )
 
     # =========================================================================
@@ -1496,49 +1472,51 @@ class ToolRegistry:
     # Strategy Tool Handlers
     # =========================================================================
 
-    async def _handle_list_dca_strategies(
+    async def _handle_list_strategies(
         self,
         wallet_address: str,
+        strategy_type: Optional[str] = None,
         status: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Handle listing DCA strategies for a wallet."""
+        """Handle listing strategies for a wallet."""
         from ...db import get_convex_client
 
         try:
             convex = get_convex_client()
 
+            # Query the general strategies table
             args = {"walletAddress": wallet_address.lower()}
             if status:
                 args["status"] = status
 
-            strategies = await convex.query("dca:listByWallet", args)
+            strategies = await convex.query("strategies:listByWallet", args)
 
             if not strategies:
                 return {
                     "success": True,
                     "strategies": [],
                     "count": 0,
-                    "message": "No DCA strategies found for this wallet",
+                    "message": "No strategies found for this wallet",
                 }
 
             formatted = []
             for s in strategies:
-                formatted.append({
+                strategy_data = {
                     "id": s.get("_id"),
                     "name": s.get("name"),
+                    "type": s.get("strategyType", "custom"),
                     "status": s.get("status"),
-                    "from_token": s.get("fromToken", {}).get("symbol"),
-                    "to_token": s.get("toToken", {}).get("symbol"),
-                    "amount_per_execution_usd": s.get("amountPerExecutionUsd"),
-                    "frequency": s.get("frequency"),
+                    "config": s.get("config", {}),
                     "total_executions": s.get("totalExecutions", 0),
-                    "successful_executions": s.get("successfulExecutions", 0),
-                    "total_spent_usd": s.get("totalAmountSpentUsd", 0),
-                    "total_tokens_acquired": s.get("totalTokensAcquired", "0"),
-                    "average_price_usd": s.get("averagePriceUsd"),
                     "next_execution_at": s.get("nextExecutionAt"),
                     "created_at": s.get("createdAt"),
-                })
+                }
+
+                # Filter by type if specified
+                if strategy_type and strategy_data["type"] != strategy_type:
+                    continue
+
+                formatted.append(strategy_data)
 
             return {
                 "success": True,
@@ -1547,27 +1525,27 @@ class ToolRegistry:
             }
 
         except Exception as e:
-            self.logger.error(f"Error listing DCA strategies: {e}")
+            self.logger.error(f"Error listing strategies: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _handle_get_dca_strategy(
+    async def _handle_get_strategy(
         self,
         strategy_id: str,
     ) -> Dict[str, Any]:
-        """Handle getting a single DCA strategy."""
+        """Handle getting a single strategy."""
         from ...db import get_convex_client
 
         try:
             convex = get_convex_client()
 
-            strategy = await convex.query("dca:get", {"id": strategy_id})
+            strategy = await convex.query("strategies:get", {"strategyId": strategy_id})
 
             if not strategy:
                 return {"success": False, "error": "Strategy not found"}
 
             # Get recent executions
             executions = await convex.query(
-                "dca:getExecutions",
+                "strategies:getWithExecutions",
                 {"strategyId": strategy_id, "limit": 5},
             )
 
@@ -1577,51 +1555,37 @@ class ToolRegistry:
                     "id": strategy.get("_id"),
                     "name": strategy.get("name"),
                     "description": strategy.get("description"),
+                    "type": strategy.get("strategyType", "custom"),
                     "status": strategy.get("status"),
-                    "from_token": strategy.get("fromToken"),
-                    "to_token": strategy.get("toToken"),
-                    "amount_per_execution_usd": strategy.get("amountPerExecutionUsd"),
-                    "frequency": strategy.get("frequency"),
-                    "max_slippage_bps": strategy.get("maxSlippageBps"),
-                    "max_gas_usd": strategy.get("maxGasUsd"),
-                    "max_total_spend_usd": strategy.get("maxTotalSpendUsd"),
-                    "max_executions": strategy.get("maxExecutions"),
+                    "config": strategy.get("config", {}),
                     "stats": {
                         "total_executions": strategy.get("totalExecutions", 0),
                         "successful_executions": strategy.get("successfulExecutions", 0),
                         "failed_executions": strategy.get("failedExecutions", 0),
-                        "skipped_executions": strategy.get("skippedExecutions", 0),
-                        "total_spent_usd": strategy.get("totalAmountSpentUsd", 0),
-                        "total_tokens_acquired": strategy.get("totalTokensAcquired", "0"),
-                        "average_price_usd": strategy.get("averagePriceUsd"),
                     },
                     "next_execution_at": strategy.get("nextExecutionAt"),
                     "last_execution_at": strategy.get("lastExecutionAt"),
                     "last_error": strategy.get("lastError"),
                     "created_at": strategy.get("createdAt"),
                 },
-                "recent_executions": executions or [],
+                "recent_executions": executions.get("executions", []) if executions else [],
             }
 
         except Exception as e:
-            self.logger.error(f"Error getting DCA strategy: {e}")
+            self.logger.error(f"Error getting strategy: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _handle_create_dca_strategy(
+    async def _handle_create_strategy(
         self,
         wallet_address: str,
         name: str,
-        from_token_symbol: str,
-        to_token_symbol: str,
-        amount_per_execution_usd: float,
-        frequency: str,
+        strategy_type: str,
+        config: Dict[str, Any],
         chain_id: int = 1,
         max_slippage_percent: float = 1.0,
         max_gas_usd: float = 10.0,
-        max_total_spend_usd: Optional[float] = None,
-        max_executions: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Handle creating a new DCA strategy."""
+        """Handle creating a new strategy."""
         from ...db import get_convex_client
 
         try:
@@ -1636,160 +1600,143 @@ class ToolRegistry:
             if not wallet:
                 return {"success": False, "error": "Wallet not found. Please connect your wallet first."}
 
-            # Token address lookups would go here in production
-            from_token = {
-                "symbol": from_token_symbol.upper(),
-                "address": "0x",
-                "chainId": chain_id,
-                "decimals": 18 if from_token_symbol.upper() == "ETH" else 6,
-            }
-            to_token = {
-                "symbol": to_token_symbol.upper(),
-                "address": "0x",
-                "chainId": chain_id,
-                "decimals": 18,
-            }
+            # Validate config based on strategy type
+            if strategy_type == "dca":
+                required_fields = ["from_token", "to_token", "amount_usd", "frequency"]
+                for field in required_fields:
+                    if field not in config:
+                        return {"success": False, "error": f"DCA strategy requires '{field}' in config"}
+            elif strategy_type == "rebalance":
+                if "target_allocations" not in config:
+                    return {"success": False, "error": "Rebalance strategy requires 'target_allocations' in config"}
+            elif strategy_type in ["limit_order", "stop_loss", "take_profit"]:
+                required_fields = ["token", "trigger_price_usd", "amount"]
+                for field in required_fields:
+                    if field not in config:
+                        return {"success": False, "error": f"{strategy_type} strategy requires '{field}' in config"}
 
             # Convert slippage percent to basis points
             max_slippage_bps = int(max_slippage_percent * 100)
 
             args = {
                 "userId": wallet.get("userId"),
-                "walletId": wallet.get("_id"),
                 "walletAddress": wallet_address.lower(),
                 "name": name,
-                "fromToken": from_token,
-                "toToken": to_token,
-                "amountPerExecutionUsd": amount_per_execution_usd,
-                "frequency": frequency,
-                "executionHourUtc": 12,
-                "maxSlippageBps": max_slippage_bps,
-                "maxGasUsd": max_gas_usd,
+                "strategyType": strategy_type,
+                "config": {
+                    **config,
+                    "chainId": chain_id,
+                    "maxSlippageBps": max_slippage_bps,
+                    "maxGasUsd": max_gas_usd,
+                },
             }
 
-            if max_total_spend_usd is not None:
-                args["maxTotalSpendUsd"] = max_total_spend_usd
-            if max_executions is not None:
-                args["maxExecutions"] = max_executions
-
-            strategy_id = await convex.mutation("dca:create", args)
+            strategy_id = await convex.mutation("strategies:create", args)
 
             return {
                 "success": True,
                 "strategy_id": strategy_id,
                 "name": name,
+                "type": strategy_type,
                 "status": "draft",
-                "message": (
-                    f"DCA strategy '{name}' created! "
-                    f"Will buy {to_token_symbol} with {from_token_symbol} "
-                    f"for ${amount_per_execution_usd} {frequency}. "
-                    "Activate the strategy with a session key to start."
-                ),
+                "message": f"Strategy '{name}' ({strategy_type}) created. Activate with a session key to start.",
             }
 
         except Exception as e:
-            self.logger.error(f"Error creating DCA strategy: {e}")
+            self.logger.error(f"Error creating strategy: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _handle_pause_dca_strategy(
+    async def _handle_pause_strategy(
         self,
         strategy_id: str,
         reason: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Handle pausing a DCA strategy."""
+        """Handle pausing a strategy."""
         from ...db import get_convex_client
 
         try:
             convex = get_convex_client()
 
-            args = {"strategyId": strategy_id}
-            if reason:
-                args["reason"] = reason
-
-            await convex.mutation("dca:pause", args)
+            await convex.mutation("strategies:pause", {"strategyId": strategy_id})
 
             return {
                 "success": True,
                 "strategy_id": strategy_id,
                 "status": "paused",
-                "message": "DCA strategy paused successfully",
+                "message": "Strategy paused successfully",
             }
 
         except Exception as e:
-            self.logger.error(f"Error pausing DCA strategy: {e}")
+            self.logger.error(f"Error pausing strategy: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _handle_resume_dca_strategy(
+    async def _handle_resume_strategy(
         self,
         strategy_id: str,
     ) -> Dict[str, Any]:
-        """Handle resuming a paused DCA strategy."""
+        """Handle resuming a paused strategy."""
         from ...db import get_convex_client
         import time
 
         try:
             convex = get_convex_client()
 
-            # Schedule next execution for 1 hour from now
-            next_execution_at = int(time.time() * 1000) + (60 * 60 * 1000)
-
-            await convex.mutation(
-                "dca:resume",
-                {"strategyId": strategy_id, "nextExecutionAt": next_execution_at},
-            )
+            await convex.mutation("strategies:activate", {"strategyId": strategy_id})
 
             return {
                 "success": True,
                 "strategy_id": strategy_id,
                 "status": "active",
-                "next_execution_at": next_execution_at,
-                "message": "DCA strategy resumed successfully",
+                "message": "Strategy resumed successfully",
             }
 
         except Exception as e:
-            self.logger.error(f"Error resuming DCA strategy: {e}")
+            self.logger.error(f"Error resuming strategy: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _handle_stop_dca_strategy(
+    async def _handle_stop_strategy(
         self,
         strategy_id: str,
     ) -> Dict[str, Any]:
-        """Handle stopping a DCA strategy."""
+        """Handle stopping a strategy."""
         from ...db import get_convex_client
 
         try:
             convex = get_convex_client()
 
-            await convex.mutation("dca:stop", {"strategyId": strategy_id})
+            await convex.mutation(
+                "strategies:updateStatus",
+                {"strategyId": strategy_id, "status": "archived"},
+            )
 
             return {
                 "success": True,
                 "strategy_id": strategy_id,
-                "status": "completed",
-                "message": "DCA strategy stopped successfully",
+                "status": "archived",
+                "message": "Strategy stopped successfully",
             }
 
         except Exception as e:
-            self.logger.error(f"Error stopping DCA strategy: {e}")
+            self.logger.error(f"Error stopping strategy: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _handle_get_dca_executions(
+    async def _handle_get_strategy_executions(
         self,
         strategy_id: str,
         limit: int = 10,
     ) -> Dict[str, Any]:
-        """Handle getting DCA execution history."""
+        """Handle getting strategy execution history."""
         from ...db import get_convex_client
 
         try:
             convex = get_convex_client()
 
-            executions = await convex.query(
-                "dca:getExecutions",
+            result = await convex.query(
+                "strategies:getWithExecutions",
                 {"strategyId": strategy_id, "limit": limit},
             )
 
-            if not executions:
+            if not result or not result.get("executions"):
                 return {
                     "success": True,
                     "executions": [],
@@ -1797,21 +1744,16 @@ class ToolRegistry:
                     "message": "No executions yet for this strategy",
                 }
 
+            executions = result.get("executions", [])
             formatted = []
             for e in executions:
                 formatted.append({
-                    "execution_number": e.get("executionNumber"),
+                    "execution_id": e.get("_id"),
                     "status": e.get("status"),
-                    "scheduled_at": e.get("scheduledAt"),
                     "started_at": e.get("startedAt"),
                     "completed_at": e.get("completedAt"),
-                    "tx_hash": e.get("txHash"),
-                    "input_amount": e.get("actualInputAmount"),
-                    "output_amount": e.get("actualOutputAmount"),
-                    "price_usd": e.get("actualPriceUsd"),
-                    "gas_usd": e.get("gasUsd"),
-                    "skip_reason": e.get("skipReason"),
-                    "error_message": e.get("errorMessage"),
+                    "result": e.get("result"),
+                    "error": e.get("error"),
                 })
 
             return {
@@ -1821,51 +1763,46 @@ class ToolRegistry:
             }
 
         except Exception as e:
-            self.logger.error(f"Error getting DCA executions: {e}")
+            self.logger.error(f"Error getting strategy executions: {e}")
             return {"success": False, "error": str(e)}
 
-    async def _handle_update_dca_strategy(
+    async def _handle_update_strategy(
         self,
         strategy_id: str,
-        amount_per_execution_usd: Optional[float] = None,
-        frequency: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None,
         max_slippage_percent: Optional[float] = None,
         max_gas_usd: Optional[float] = None,
-        max_total_spend_usd: Optional[float] = None,
-        max_executions: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Handle updating a DCA strategy configuration."""
+        """Handle updating a strategy configuration."""
         from ...db import get_convex_client
 
         try:
             convex = get_convex_client()
 
-            args = {"strategyId": strategy_id}
+            updates = {}
             updates_made = []
 
-            if amount_per_execution_usd is not None:
-                args["amountPerExecutionUsd"] = amount_per_execution_usd
-                updates_made.append(f"amount=${amount_per_execution_usd}")
-            if frequency is not None:
-                args["frequency"] = frequency
-                updates_made.append(f"frequency={frequency}")
+            if config is not None:
+                updates["config"] = config
+                updates_made.append("config updated")
             if max_slippage_percent is not None:
-                args["maxSlippageBps"] = int(max_slippage_percent * 100)
+                if "config" not in updates:
+                    updates["config"] = {}
+                updates["config"]["maxSlippageBps"] = int(max_slippage_percent * 100)
                 updates_made.append(f"max_slippage={max_slippage_percent}%")
             if max_gas_usd is not None:
-                args["maxGasUsd"] = max_gas_usd
+                if "config" not in updates:
+                    updates["config"] = {}
+                updates["config"]["maxGasUsd"] = max_gas_usd
                 updates_made.append(f"max_gas=${max_gas_usd}")
-            if max_total_spend_usd is not None:
-                args["maxTotalSpendUsd"] = max_total_spend_usd
-                updates_made.append(f"max_total=${max_total_spend_usd}")
-            if max_executions is not None:
-                args["maxExecutions"] = max_executions
-                updates_made.append(f"max_executions={max_executions}")
 
             if len(updates_made) == 0:
                 return {"success": False, "error": "No updates provided"}
 
-            await convex.mutation("dca:updateConfig", args)
+            await convex.mutation(
+                "strategies:update",
+                {"strategyId": strategy_id, **updates},
+            )
 
             return {
                 "success": True,
@@ -1875,7 +1812,7 @@ class ToolRegistry:
             }
 
         except Exception as e:
-            self.logger.error(f"Error updating DCA strategy: {e}")
+            self.logger.error(f"Error updating strategy: {e}")
             return {"success": False, "error": str(e)}
 
 
