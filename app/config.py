@@ -159,7 +159,7 @@ class Settings(BaseSettings):
     )
     
     # LLM Configuration
-    llm_model: str = Field(default="claude-sonnet-4-20250514", description="Default LLM model")
+    llm_model: str = Field(default="claude-sonnet-4-5-20250929", description="Default LLM model")
     max_tokens: int = Field(default=4000, description="Maximum tokens for LLM response")
     temperature: float = Field(default=0.7, description="LLM temperature setting")
     context_window_size: int = Field(default=8000, description="Context window size for conversations")
@@ -179,16 +179,16 @@ class Settings(BaseSettings):
         default_factory=lambda: {
             "anthropic": [
                 {
-                    "id": "claude-sonnet-4-20250514",
-                    "label": "Claude Sonnet 4",
+                    "id": "claude-sonnet-4-5-20250929",
+                    "label": "Claude Sonnet 4.5",
                     "description": "Balanced depth and latency for daily use.",
                     "default": True,
                 },
             ],
             "zai": [
                 {
-                    "id": "glm-4.6",
-                    "label": "Zeta GLM 4.6",
+                    "id": "glm-4.7",
+                    "label": "Zeta GLM 4.7",
                     "description": "Relay-native experimentation model.",
                     "default": True,
                 }
