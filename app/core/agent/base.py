@@ -574,6 +574,49 @@ class Agent:
             else:
                 tool_data['tvl_error'] = result_data.get('error', 'Unknown error')
 
+        # Strategy tools
+        elif tool_name == "list_strategies":
+            if result_data.get('success'):
+                tool_data['strategies'] = {
+                    'success': True,
+                    'strategies': result_data.get('strategies', []),
+                    'count': result_data.get('count', 0),
+                    'wallet_address': result_data.get('wallet_address'),
+                }
+            else:
+                tool_data['strategies_error'] = result_data.get('error', 'Unknown error')
+
+        elif tool_name == "get_strategy":
+            if result_data.get('success'):
+                tool_data['strategy_detail'] = {
+                    'success': True,
+                    'strategy': result_data.get('strategy', {}),
+                }
+            else:
+                tool_data['strategy_detail_error'] = result_data.get('error', 'Unknown error')
+
+        elif tool_name in ("create_strategy", "update_strategy", "pause_strategy", "resume_strategy", "stop_strategy"):
+            # These mutations don't need panels, but we can track success
+            if result_data.get('success'):
+                tool_data['strategy_mutation'] = {
+                    'success': True,
+                    'action': tool_name,
+                    'strategy_id': result_data.get('strategy_id'),
+                    'message': result_data.get('message'),
+                }
+            else:
+                tool_data['strategy_mutation_error'] = result_data.get('error', 'Unknown error')
+
+        elif tool_name == "get_strategy_executions":
+            if result_data.get('success'):
+                tool_data['strategy_executions'] = {
+                    'success': True,
+                    'executions': result_data.get('executions', []),
+                    'strategy': result_data.get('strategy', {}),
+                }
+            else:
+                tool_data['strategy_executions_error'] = result_data.get('error', 'Unknown error')
+
     def _needs_tvl_data(self, request: ChatRequest) -> bool:
         """Determine if the request is asking for TVL/chart data (e.g., Uniswap TVL)."""
         if not request.messages:
@@ -872,6 +915,40 @@ class Agent:
                 message = swap_info.get('message')
                 if message:
                     reply_text = message
+
+        # Add strategies panel if available
+        strategies_info = tool_data.get('strategies')
+        if strategies_info and strategies_info.get('success'):
+            strategies_list = strategies_info.get('strategies', [])
+            panels['my_strategies'] = {
+                'id': 'my-strategies',
+                'kind': 'my-strategies',
+                'title': 'My Strategies',
+                'payload': {
+                    'strategies': strategies_list,
+                    'count': len(strategies_list),
+                    'walletAddress': strategies_info.get('wallet_address'),
+                },
+                'sources': [],
+                'metadata': {
+                    'density': 'full',
+                },
+            }
+
+        # Add single strategy detail panel if available
+        strategy_detail = tool_data.get('strategy_detail')
+        if strategy_detail and strategy_detail.get('success'):
+            strategy = strategy_detail.get('strategy', {})
+            panels['strategy_detail'] = {
+                'id': 'strategy-detail',
+                'kind': 'strategy-detail',
+                'title': strategy.get('name', 'Strategy Details'),
+                'payload': strategy,
+                'sources': [],
+                'metadata': {
+                    'density': 'full',
+                },
+            }
 
         # If the user asked for portfolio insights but we couldn't load data, provide a safe, helpful prompt instead of guessing
         if tool_data.get('needs_portfolio') and 'portfolio' not in tool_data:
