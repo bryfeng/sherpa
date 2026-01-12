@@ -756,6 +756,43 @@ class ToolRegistry:
             self._handle_get_strategy_executions,
         )
 
+        # Phase 13: Strategy execution approval tool
+        self.register(
+            "approve_strategy_execution",
+            ToolDefinition(
+                name="approve_strategy_execution",
+                description=(
+                    "Approve or reject a pending strategy execution. "
+                    "Use this when the user says 'approve', 'yes', 'execute', 'do it', 'go ahead' "
+                    "in response to a strategy execution approval request. "
+                    "Also use when user says 'skip', 'no', 'reject', 'cancel' to skip the execution. "
+                    "The execution_id should be taken from the approval request message metadata."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="execution_id",
+                        type=ToolParameterType.STRING,
+                        description="The execution ID from the approval request",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="approve",
+                        type=ToolParameterType.BOOLEAN,
+                        description="True to approve and execute, False to skip/reject",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="reason",
+                        type=ToolParameterType.STRING,
+                        description="Optional reason for skipping (if approve=False)",
+                        required=False,
+                    ),
+                ],
+            ),
+            self._handle_approve_strategy_execution,
+            requires_address=True,
+        )
+
         self.register(
             "update_strategy",
             ToolDefinition(
@@ -1700,22 +1737,41 @@ class ToolRegistry:
     async def _handle_resume_strategy(
         self,
         strategy_id: str,
+        session_key_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Handle resuming a paused strategy."""
+        """Handle resuming a paused strategy.
+
+        NOTE: Without a session_key_id, the strategy will go to 'pending_session' status.
+        A session key is required for actual automated execution.
+        """
         from ...db import get_convex_client
-        import time
 
         try:
             convex = get_convex_client()
 
-            await convex.mutation("strategies:activate", {"strategyId": strategy_id})
+            args = {"strategyId": strategy_id}
+            if session_key_id:
+                args["sessionKeyId"] = session_key_id
 
-            return {
-                "success": True,
-                "strategy_id": strategy_id,
-                "status": "active",
-                "message": "Strategy resumed successfully",
-            }
+            await convex.mutation("strategies:activate", args)
+
+            if session_key_id:
+                return {
+                    "success": True,
+                    "strategy_id": strategy_id,
+                    "status": "active",
+                    "message": "Strategy activated with session key. Automated execution enabled.",
+                }
+            else:
+                return {
+                    "success": True,
+                    "strategy_id": strategy_id,
+                    "status": "pending_session",
+                    "message": (
+                        "Strategy is ready but requires a session key for automated execution. "
+                        "Please authorize a session key to enable automatic trading."
+                    ),
+                }
 
         except Exception as e:
             self.logger.error(f"Error resuming strategy: {e}")
@@ -1791,6 +1847,89 @@ class ToolRegistry:
 
         except Exception as e:
             self.logger.error(f"Error getting strategy executions: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_approve_strategy_execution(
+        self,
+        execution_id: str,
+        approve: bool,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Handle approval or rejection of a pending strategy execution.
+
+        Phase 13: This is called when the user responds to an approval request
+        in chat. It calls the appropriate Convex mutation to update the execution
+        state.
+        """
+        from ...db import get_convex_client
+
+        try:
+            convex = get_convex_client()
+
+            # Get the execution to verify it exists and is awaiting approval
+            execution = await convex.query(
+                "strategyExecutions:get",
+                {"executionId": execution_id},
+            )
+
+            if not execution:
+                return {
+                    "success": False,
+                    "error": f"Execution not found: {execution_id}",
+                }
+
+            current_state = execution.get("currentState")
+            if current_state != "awaiting_approval":
+                return {
+                    "success": False,
+                    "error": f"Execution is not awaiting approval (current state: {current_state})",
+                }
+
+            if approve:
+                # Approve the execution - transitions to "executing" state
+                await convex.mutation(
+                    "strategyExecutions:approve",
+                    {
+                        "executionId": execution_id,
+                        "approverAddress": execution.get("walletAddress", ""),
+                    },
+                )
+
+                strategy = execution.get("strategy", {})
+                strategy_name = strategy.get("name", "Strategy")
+
+                return {
+                    "success": True,
+                    "execution_id": execution_id,
+                    "status": "executing",
+                    "message": (
+                        f"Approved! {strategy_name} execution is now in progress. "
+                        "You'll be prompted to sign the transaction in your wallet."
+                    ),
+                }
+
+            else:
+                # Skip/reject the execution - transitions to "cancelled" state
+                await convex.mutation(
+                    "strategyExecutions:skip",
+                    {
+                        "executionId": execution_id,
+                        "reason": reason or "User skipped this execution",
+                    },
+                )
+
+                return {
+                    "success": True,
+                    "execution_id": execution_id,
+                    "status": "cancelled",
+                    "message": (
+                        "Execution skipped. The strategy will attempt again at the next scheduled time."
+                    ),
+                }
+
+        except Exception as e:
+            self.logger.error(f"Error handling strategy execution approval: {e}")
             return {"success": False, "error": str(e)}
 
     async def _handle_update_strategy(

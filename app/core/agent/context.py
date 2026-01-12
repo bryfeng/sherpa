@@ -131,9 +131,14 @@ class ContextManager:
 
             # Create conversation in Convex if not already created
             if not ctx.convex_id:
+                # Build args - omit title if None (Convex v.optional doesn't accept null)
+                create_args: Dict[str, Any] = {"walletId": ctx.wallet_id}
+                if ctx.title is not None:
+                    create_args["title"] = ctx.title
+
                 convex_id = await self.convex_client.mutation(
                     "conversations:create",
-                    {"walletId": ctx.wallet_id, "title": ctx.title},
+                    create_args,
                 )
                 ctx.convex_id = convex_id
                 self.logger.info(f"Created Convex conversation {convex_id} for {ctx.conversation_id}")
@@ -153,15 +158,20 @@ class ContextManager:
             return
 
         try:
+            # Build args - omit None values (Convex v.optional doesn't accept null)
+            message_args: Dict[str, Any] = {
+                "conversationId": ctx.convex_id,
+                "role": role,
+                "content": content,
+            }
+            if token_count is not None:
+                message_args["tokenCount"] = token_count
+            if metadata is not None:
+                message_args["metadata"] = metadata
+
             await self.convex_client.mutation(
                 "conversations:addMessage",
-                {
-                    "conversationId": ctx.convex_id,
-                    "role": role,
-                    "content": content,
-                    "tokenCount": token_count,
-                    "metadata": metadata,
-                },
+                message_args,
             )
             self.logger.debug(f"Persisted {role} message to Convex conversation {ctx.convex_id}")
         except Exception as e:
@@ -235,9 +245,8 @@ class ContextManager:
                 pass
             dq.appendleft(conversation_id)
 
-            # Persist new conversation to Convex (async, non-blocking)
-            if is_new and self.convex_client and not ctx.convex_id:
-                self._schedule_persistence(self._persist_conversation_to_convex(ctx))
+            # Note: Convex persistence happens in add_message() to avoid race conditions
+            # Don't schedule background persistence here - it causes duplicate calls
 
     def create_conversation_id(self, address: Optional[str]) -> str:
         """Create a new conversation ID scoped to address or guest."""
