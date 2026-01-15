@@ -160,7 +160,7 @@ class AlchemyProvider(IndexerProvider):
         payload = {
             "jsonrpc": "2.0",
             "method": "alchemy_getTokenBalances",
-            "params": [address],
+            "params": [address, "erc20"],  # "erc20" param required for some chains like Ink
             "id": 1
         }
 
