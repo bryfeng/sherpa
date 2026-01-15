@@ -109,8 +109,9 @@ class AlchemyWebhookHandler(WebhookHandler):
     def verify_signature(self, payload: bytes, signature: str) -> bool:
         """Verify Alchemy webhook signature."""
         if not self.signing_key:
-            logger.warning("No signing key configured, skipping signature verification")
-            return True
+            # SECURITY: Fail closed - reject unsigned webhooks in production
+            logger.error("Webhook signing key not configured - rejecting webhook for security")
+            return False
 
         expected = hmac.new(
             self.signing_key.encode("utf-8"),

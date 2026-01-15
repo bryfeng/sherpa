@@ -24,8 +24,13 @@ from .models import (
 )
 
 
-# JWT configuration
-JWT_SECRET = settings.convex_internal_api_key or "dev-secret-change-in-production"
+# JWT configuration - MUST be set in production
+if not settings.convex_internal_api_key:
+    raise ValueError(
+        "CONVEX_INTERNAL_API_KEY must be set for JWT signing. "
+        "This is required for authentication security."
+    )
+JWT_SECRET = settings.convex_internal_api_key
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60  # 1 hour
 REFRESH_TOKEN_EXPIRE_DAYS = 7

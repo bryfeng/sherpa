@@ -16,13 +16,25 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# Add CORS middleware
+# Add CORS middleware - configured for security
+# In production, only allow specific origins
+ALLOWED_ORIGINS = [
+    "https://runsherpa.ai",
+    "https://app.runsherpa.ai",
+    "https://www.runsherpa.ai",
+    # Development origins (remove in production if needed)
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
 
 # Add rate limiting middleware (added after CORS so it runs first on requests)
