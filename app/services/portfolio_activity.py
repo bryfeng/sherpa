@@ -12,7 +12,8 @@ from typing import Literal, Optional
 import httpx
 
 from ..config import settings
-from .address import is_evm_chain, normalize_chain
+from .address import normalize_chain
+from .chains import get_chain_service
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,11 @@ async def fetch_activity(
 
     if normalized_chain == "solana":
         return await _fetch_solana_activity(address, start, end, effective_limit)
-    if is_evm_chain(normalized_chain):
+
+    # Try EVM chains via chain service
+    chain_service = get_chain_service()
+    chain_config = await chain_service.resolve_alias(normalized_chain)
+    if chain_config and chain_config.alchemy_slug:
         return await _fetch_evm_activity(address, normalized_chain, start, end, effective_limit)
 
     logger.warning("Unsupported chain for history summary: %s", normalized_chain)
@@ -72,7 +77,7 @@ async def _fetch_evm_activity(
         logger.warning("Alchemy key not configured; returning empty EVM history")
         return []
 
-    base_url = _resolve_alchemy_url(chain)
+    base_url = await _resolve_alchemy_url(chain)
     if not base_url:
         logger.warning("Alchemy endpoint not known for chain %s", chain)
         return []
@@ -180,14 +185,21 @@ async def _fetch_evm_activity(
     return results
 
 
-def _resolve_alchemy_url(chain: str) -> Optional[str]:
-    mapping = {
+async def _resolve_alchemy_url(chain: str) -> Optional[str]:
+    """Resolve Alchemy URL for a chain using the chain service."""
+    chain_service = get_chain_service()
+    url = await chain_service.get_alchemy_url(chain, settings.alchemy_api_key)
+    if url:
+        return url
+
+    # Fallback for common chains if chain service unavailable
+    fallback_mapping = {
         "ethereum": f"https://eth-mainnet.g.alchemy.com/v2/{settings.alchemy_api_key}",
         "mainnet": f"https://eth-mainnet.g.alchemy.com/v2/{settings.alchemy_api_key}",
         "polygon": f"https://polygon-mainnet.g.alchemy.com/v2/{settings.alchemy_api_key}",
         "base": f"https://base-mainnet.g.alchemy.com/v2/{settings.alchemy_api_key}",
     }
-    return mapping.get(chain)
+    return fallback_mapping.get(chain)
 
 
 async def _fetch_solana_activity(
