@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Union
 
-from ..core.bridge.constants import CHAIN_METADATA, NATIVE_PLACEHOLDER
+from ..core.bridge.constants import NATIVE_PLACEHOLDER
+from ..core.bridge.chain_registry import get_registry_sync
 from ..core.chain_types import ChainId, SOLANA_CHAIN_ID, is_solana_chain, is_evm_chain_id
 from .address import is_valid_solana_address
 
@@ -97,12 +98,13 @@ class AmbiguityResult:
     @property
     def options_text(self) -> str:
         """Human-readable options for disambiguation."""
+        registry = get_registry_sync()
         lines = []
         for i, m in enumerate(self.matches[:5], 1):
             if m.is_solana:
                 chain_name = "Solana"
             else:
-                chain_name = CHAIN_METADATA.get(m.chain_id, {}).get("name", f"Chain {m.chain_id}")
+                chain_name = registry.get_chain_name(m.chain_id)
             lines.append(f"{i}. {m.symbol} ({m.name}) on {chain_name}")
         return "\n".join(lines)
 

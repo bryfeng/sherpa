@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from ..core.bridge.constants import CHAIN_ALIAS_TO_ID, DEFAULT_CHAIN_NAME_TO_ID
+from ..core.bridge.chain_registry import get_registry_sync
 from ..core.chain_types import ChainId, is_solana_chain
 from ..core.swap.constants import SWAP_SOURCE, TOKEN_ALIAS_MAP, TOKEN_REGISTRY
 from ..providers.relay import RelayProvider
@@ -157,23 +157,21 @@ def _resolve_chain_id(chain: Optional[str]) -> int:
             "Use Jupiter (https://jup.ag) for Solana swaps."
         )
 
-    if lower in CHAIN_ALIAS_TO_ID:
-        chain_id = CHAIN_ALIAS_TO_ID[lower]
-        # Guard against non-EVM chains that might be in the alias map
+    # Use dynamic chain registry
+    registry = get_registry_sync()
+    chain_id = registry.get_chain_id(lower)
+    if chain_id is not None:
+        # Guard against non-EVM chains
         if is_solana_chain(chain_id):
             raise ValueError(
                 "Solana swaps are not yet supported via Relay. "
                 "Use Jupiter (https://jup.ag) for Solana swaps."
             )
-        return chain_id
-    if lower in DEFAULT_CHAIN_NAME_TO_ID:
-        chain_id = DEFAULT_CHAIN_NAME_TO_ID[lower]
-        if is_solana_chain(chain_id):
-            raise ValueError(
-                "Solana swaps are not yet supported via Relay. "
-                "Use Jupiter (https://jup.ag) for Solana swaps."
-            )
-        return chain_id
+        # Ensure we return an int for EVM chains
+        if isinstance(chain_id, int):
+            return chain_id
+
+    # Try parsing as integer chain ID
     try:
         return int(chain_str, 10)
     except ValueError:

@@ -1,10 +1,12 @@
-"""Constants and metadata for bridge orchestration."""
+"""Constants for bridge orchestration.
 
-from typing import Any, Dict, Set, Union, Literal
+Note: Chain metadata is now fetched dynamically from Relay API via ChainRegistry.
+See chain_registry.py for the dynamic chain support implementation.
+"""
 
-# ChainId type for type hints (mirrors core/chain_types.py)
-ChainId = Union[int, Literal["solana"]]
+from typing import Set
 
+# Keywords for detecting bridge intent in user messages
 BRIDGE_KEYWORDS = (
     'bridge',
     'bridging',
@@ -14,6 +16,7 @@ BRIDGE_KEYWORDS = (
     'port to',
 )
 
+# Keywords for detecting follow-up messages in bridge conversations
 BRIDGE_FOLLOWUP_KEYWORDS = (
     'quote',
     'retry',
@@ -29,65 +32,12 @@ BRIDGE_FOLLOWUP_KEYWORDS = (
     'please',
 )
 
-CHAIN_METADATA: Dict[int, Dict[str, Any]] = {
-    1: {
-        'name': 'Ethereum',
-        'aliases': ['ethereum', 'eth', 'mainnet', 'main net', 'main-net', 'ethereum mainnet', 'layer1', 'layer 1', 'layer-1', 'l1'],
-        'native_symbol': 'ETH',
-        'native_token': '0x0000000000000000000000000000000000000000',
-        'native_decimals': 18,
-    },
-    8453: {
-        'name': 'Base',
-        'aliases': ['base', 'base mainnet'],
-        'native_symbol': 'ETH',
-        'native_token': '0x0000000000000000000000000000000000000000',
-        'native_decimals': 18,
-    },
-    42161: {
-        'name': 'Arbitrum',
-        'aliases': ['arbitrum', 'arb'],
-        'native_symbol': 'ETH',
-        'native_token': '0x0000000000000000000000000000000000000000',
-        'native_decimals': 18,
-    },
-    10: {
-        'name': 'Optimism',
-        'aliases': ['optimism', 'op'],
-        'native_symbol': 'ETH',
-        'native_token': '0x0000000000000000000000000000000000000000',
-        'native_decimals': 18,
-    },
-    137: {
-        'name': 'Polygon',
-        'aliases': ['polygon', 'matic', 'matic pos'],
-        'native_symbol': 'MATIC',
-        'native_token': '0x0000000000000000000000000000000000000000',
-        'native_decimals': 18,
-        'chain_type': 'evm',
-    },
-    # Non-EVM chains use string identifiers
-    "solana": {
-        'name': 'Solana',
-        'aliases': ['solana', 'sol'],
-        'native_symbol': 'SOL',
-        'native_token': 'So11111111111111111111111111111111111111112',
-        'native_decimals': 9,
-        'chain_type': 'solana',
-    },
-}
-
-CHAIN_ALIAS_TO_ID: Dict[str, ChainId] = {
-    alias: chain_id
-    for chain_id, details in CHAIN_METADATA.items()
-    for alias in details.get('aliases', [])
-}
-
-DEFAULT_CHAIN_NAME_TO_ID: Dict[str, ChainId] = {
-    details['name'].lower(): chain_id for chain_id, details in CHAIN_METADATA.items()
-}
-
+# Native token placeholder address (used for ETH on most chains)
 NATIVE_PLACEHOLDER = '0x0000000000000000000000000000000000000000'
+
+# Units for amount parsing
 USD_UNITS: Set[str] = {'usd', 'dollar', 'dollars', 'usdc', 'buck', 'bucks'}
 ETH_UNITS: Set[str] = {'eth', 'weth'}
+
+# Bridge provider attribution
 BRIDGE_SOURCE = {'name': 'Relay', 'url': 'https://relay.link'}

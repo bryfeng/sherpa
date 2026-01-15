@@ -7,20 +7,18 @@ import logging
 import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import httpx
 
 from ...providers.relay import RelayProvider
 from ...providers.coingecko import CoingeckoProvider
 from ...types.requests import ChatRequest
+from .chain_registry import ChainRegistry, ChainId
 from .constants import (
     BRIDGE_FOLLOWUP_KEYWORDS,
     BRIDGE_KEYWORDS,
     BRIDGE_SOURCE,
-    CHAIN_ALIAS_TO_ID,
-    CHAIN_METADATA,
-    DEFAULT_CHAIN_NAME_TO_ID,
     ETH_UNITS,
     NATIVE_PLACEHOLDER,
     USD_UNITS,
@@ -29,10 +27,19 @@ from .models import BridgeResult, BridgeState
 
 
 class BridgeManager:
-    """Encapsulates bridge intent parsing, quoting, and manual build preparation."""
+    """Encapsulates bridge intent parsing, quoting, and manual build preparation.
 
-    def __init__(self, *, logger: Optional[logging.Logger] = None) -> None:
+    Uses ChainRegistry for dynamic chain support instead of hardcoded metadata.
+    """
+
+    def __init__(
+        self,
+        *,
+        chain_registry: Optional[ChainRegistry] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> None:
         self._logger = logger or logging.getLogger(__name__)
+        self._registry = chain_registry or ChainRegistry()
         self._pending: Dict[str, BridgeState] = {}
         self._eth_price_cache: Optional[Tuple[Dict[str, Any], datetime]] = None
         self._coingecko = CoingeckoProvider()
@@ -53,6 +60,11 @@ class BridgeManager:
         latest = request.messages[-1].content.strip()
         if not latest:
             return None
+
+        # Ensure chain registry is loaded before processing
+        registry_ready = await self._registry.ensure_loaded()
+        if not registry_ready:
+            self._logger.warning("Chain registry not available, bridge detection may be limited")
 
         normalized_message = self._normalize_bridge_text(latest)
         message_lower = normalized_message
@@ -135,9 +147,12 @@ class BridgeManager:
         if from_chain_id is None:
             from_chain_id = 1
         if to_chain_id is None:
+            # List supported chains dynamically
+            supported = self._registry.get_supported_chain_names(limit=8)
+            chain_list = ", ".join(supported) if supported else "Base, Arbitrum, Optimism, Polygon"
             return finalize_result(
                 'needs_chain',
-                message='Which chain should I bridge to? Try “bridge … to Base/Arbitrum/Optimism/Polygon”.',
+                message=f'Which chain should I bridge to? I support: {chain_list}. Try "bridge … to [chain name]".',
                 context_updates={'user_address': user_address, 'from_chain_id': from_chain_id},
             )
         context.update({'user_address': user_address, 'from_chain_id': from_chain_id, 'to_chain_id': to_chain_id})
@@ -623,25 +638,22 @@ class BridgeManager:
             normalized = normalized.replace(src, dest)
         return normalized
 
-    def _detect_chain_anywhere(self, message: str) -> Optional[int]:
-        for alias, chain_id in CHAIN_ALIAS_TO_ID.items():
-            pattern = rf'\b{re.escape(alias)}\b'
-            if re.search(pattern, message):
-                return chain_id
-        return None
+    def _detect_chain_anywhere(self, message: str) -> Optional[ChainId]:
+        """Detect any chain reference in the message using dynamic registry."""
+        return self._registry.detect_chain_in_text(message)
 
-    def _infer_bridge_params(self, message: str, default_chain: Optional[str]) -> Dict[str, Optional[int]]:
+    def _infer_bridge_params(self, message: str, default_chain: Optional[str]) -> Dict[str, Optional[ChainId]]:
         msg = message.lower()
         to_chain_id = self._detect_chain(msg, ['to', 'onto', 'into', 'towards'])
         if to_chain_id is None:
             to_chain_id = self._detect_chain_arrow(msg)
 
-        default_chain_id = None
+        # Resolve default chain using registry
+        default_chain_id: Optional[ChainId] = None
         if default_chain:
-            lower = default_chain.lower()
-            default_chain_id = CHAIN_ALIAS_TO_ID.get(lower) or DEFAULT_CHAIN_NAME_TO_ID.get(lower)
+            default_chain_id = self._registry.get_chain_id(default_chain)
         if default_chain_id is None:
-            default_chain_id = 1
+            default_chain_id = 1  # Ethereum as fallback
 
         from_chain_id = self._detect_chain(msg, ['from', 'off', 'out of'])
         if from_chain_id is None:
@@ -651,9 +663,12 @@ class BridgeManager:
         if from_chain_id is None:
             from_chain_id = default_chain_id
 
+        # If destination still not found, look for any chain mention that isn't the source
         if to_chain_id is None:
-            for alias, chain_id in CHAIN_ALIAS_TO_ID.items():
-                if alias in {'eth', 'ethereum', 'mainnet'}:
+            alias_map = self._registry.get_all_aliases()
+            for alias, chain_id in alias_map.items():
+                # Skip common Ethereum aliases when looking for destination
+                if alias in {'eth', 'ethereum', 'mainnet', 'l1', 'layer1', 'layer 1'}:
                     continue
                 if alias in msg and chain_id != from_chain_id:
                     to_chain_id = chain_id
@@ -661,17 +676,14 @@ class BridgeManager:
 
         return {'from_chain_id': from_chain_id, 'to_chain_id': to_chain_id}
  
-    def _detect_chain(self, message: str, keywords: List[str]) -> Optional[int]:
-        for alias, chain_id in CHAIN_ALIAS_TO_ID.items():
-            escaped = re.escape(alias)
-            for keyword in keywords:
-                pattern = rf'\b{keyword}\s+{escaped}\b'
-                if re.search(pattern, message):
-                    return chain_id
-        return None
+    def _detect_chain(self, message: str, keywords: List[str]) -> Optional[ChainId]:
+        """Detect chain following specific keywords (e.g., 'to base', 'from ethereum')."""
+        return self._registry.detect_chain_with_preposition(message, keywords)
 
-    def _detect_chain_arrow(self, message: str) -> Optional[int]:
-        for alias, chain_id in CHAIN_ALIAS_TO_ID.items():
+    def _detect_chain_arrow(self, message: str) -> Optional[ChainId]:
+        """Detect chain after arrow notation (e.g., '->base', '-> ink')."""
+        alias_map = self._registry.get_all_aliases()
+        for alias, chain_id in alias_map.items():
             needle = f'->{alias}'
             if needle in message or f'-> {alias}' in message:
                 return chain_id
@@ -782,13 +794,13 @@ class BridgeManager:
             formatted = formatted.rstrip('0').rstrip('.')
         return formatted or '0'
 
-    def _chain_name(self, chain_id: int) -> str:
-        meta = CHAIN_METADATA.get(chain_id)
-        return meta.get('name') if meta else f'Chain {chain_id}'
+    def _chain_name(self, chain_id: ChainId) -> str:
+        """Get human-readable chain name from registry."""
+        return self._registry.get_chain_name(chain_id)
 
-    def _chain_native_symbol(self, chain_id: int) -> str:
-        meta = CHAIN_METADATA.get(chain_id)
-        return meta.get('native_symbol', 'ETH') if meta else 'ETH'
+    def _chain_native_symbol(self, chain_id: ChainId) -> str:
+        """Get native token symbol from registry."""
+        return self._registry.get_native_symbol(chain_id)
 
     def _format_eta_minutes(self, seconds: Optional[Any]) -> Optional[str]:
         try:
@@ -802,13 +814,10 @@ class BridgeManager:
         minutes = sec / 60.0
         return f"{minutes:.1f} min"
 
-    def _native_token_address(self, chain_id: int) -> str:
-        meta = CHAIN_METADATA.get(chain_id) or {}
-        return meta.get('native_token', NATIVE_PLACEHOLDER)
+    def _native_token_address(self, chain_id: ChainId) -> str:
+        """Get native token address from registry."""
+        return self._registry.get_native_token_address(chain_id)
 
-    def _native_decimals(self, chain_id: int) -> int:
-        meta = CHAIN_METADATA.get(chain_id) or {}
-        try:
-            return int(meta.get('native_decimals', 18))
-        except (TypeError, ValueError):
-            return 18
+    def _native_decimals(self, chain_id: ChainId) -> int:
+        """Get native token decimals from registry."""
+        return self._registry.get_native_decimals(chain_id)

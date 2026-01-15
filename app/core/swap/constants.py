@@ -2,14 +2,74 @@
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple, Union
 
-from ..bridge.constants import (
-    CHAIN_ALIAS_TO_ID,
-    CHAIN_METADATA,
-    DEFAULT_CHAIN_NAME_TO_ID,
-    NATIVE_PLACEHOLDER,
+from ..bridge.constants import NATIVE_PLACEHOLDER
+from ..bridge.chain_registry import (
+    get_registry_sync,
+    get_chain_alias_to_id,
+    get_chain_metadata,
+    ChainId,
 )
+
+
+# Backwards-compatible lazy accessors for chain data
+# These are functions that return the current registry state
+def _get_chain_alias_to_id() -> Dict[str, ChainId]:
+    """Get alias -> chain_id mapping from registry."""
+    return get_chain_alias_to_id()
+
+
+def _get_chain_metadata() -> Dict[ChainId, Dict[str, Any]]:
+    """Get chain_id -> metadata mapping from registry."""
+    return get_chain_metadata()
+
+
+def _get_default_chain_name_to_id() -> Dict[str, ChainId]:
+    """Get chain name -> chain_id mapping from registry."""
+    registry = get_registry_sync()
+    result: Dict[str, ChainId] = {}
+    for chain_id, chain_data in registry._chains.items():
+        name = (chain_data.get("displayName") or chain_data.get("name") or "").lower()
+        if name:
+            result[name] = chain_id
+    return result
+
+
+# For backwards compatibility, provide these as module-level names
+# Note: These are now dynamically generated from the registry
+# Code should migrate to using get_registry_sync() directly
+class _LazyChainDict:
+    """Lazy dict-like accessor for chain data from registry."""
+
+    def __init__(self, getter):
+        self._getter = getter
+
+    def __getitem__(self, key):
+        return self._getter()[key]
+
+    def __contains__(self, key):
+        return key in self._getter()
+
+    def get(self, key, default=None):
+        return self._getter().get(key, default)
+
+    def items(self):
+        return self._getter().items()
+
+    def keys(self):
+        return self._getter().keys()
+
+    def values(self):
+        return self._getter().values()
+
+    def __iter__(self):
+        return iter(self._getter())
+
+
+CHAIN_ALIAS_TO_ID = _LazyChainDict(_get_chain_alias_to_id)
+CHAIN_METADATA = _LazyChainDict(_get_chain_metadata)
+DEFAULT_CHAIN_NAME_TO_ID = _LazyChainDict(_get_default_chain_name_to_id)
 
 SWAP_KEYWORDS: Tuple[str, ...] = (
     'swap',

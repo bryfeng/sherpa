@@ -13,12 +13,8 @@ import httpx
 from ...providers.relay import RelayProvider
 from ...providers.coingecko import CoingeckoProvider
 from ...types.requests import ChatRequest
-from ..bridge.constants import (
-    CHAIN_ALIAS_TO_ID,
-    CHAIN_METADATA,
-    DEFAULT_CHAIN_NAME_TO_ID,
-    NATIVE_PLACEHOLDER,
-)
+from ..bridge.constants import NATIVE_PLACEHOLDER
+from ..bridge.chain_registry import get_registry_sync, ChainId
 from .constants import (
     GLOBAL_TOKEN_ALIASES,
     SWAP_FOLLOWUP_KEYWORDS,
@@ -637,27 +633,22 @@ class SwapManager:
         normalized = re.sub(r'\s+', ' ', normalized).strip()
         return normalized
 
-    def _detect_chain(self, message: str) -> Optional[int]:
-        for alias, chain_id in CHAIN_ALIAS_TO_ID.items():
-            if alias in message:
-                return chain_id
-        for chain_id, meta in CHAIN_METADATA.items():
-            name = meta.get('name', '').lower()
-            if name and name in message:
-                return chain_id
-        return None
+    def _detect_chain(self, message: str) -> Optional[ChainId]:
+        """Detect chain from message using dynamic registry."""
+        registry = get_registry_sync()
+        return registry.detect_chain_in_text(message)
 
-    def _chain_from_default(self, chain_name: Optional[str]) -> Optional[int]:
+    def _chain_from_default(self, chain_name: Optional[str]) -> Optional[ChainId]:
+        """Resolve default chain name to chain ID using registry."""
         if not chain_name:
             return None
-        lowered = chain_name.lower()
-        return DEFAULT_CHAIN_NAME_TO_ID.get(lowered)
+        registry = get_registry_sync()
+        return registry.get_chain_id(chain_name)
 
-    def _chain_name(self, chain_id: int) -> str:
-        meta = CHAIN_METADATA.get(chain_id)
-        if not meta:
-            return f'Chain {chain_id}'
-        return str(meta.get('name', f'Chain {chain_id}'))
+    def _chain_name(self, chain_id: ChainId) -> str:
+        """Get chain name from registry."""
+        registry = get_registry_sync()
+        return registry.get_chain_name(chain_id)
 
     def _supported_tokens_string(
         self,

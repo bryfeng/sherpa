@@ -73,6 +73,28 @@ async def root():
 
 
 @app.on_event("startup")
+async def _init_chain_registry() -> None:
+    """Initialize the chain registry at startup.
+
+    This fetches supported chains from Relay API and makes them available
+    for bridge/swap operations. The registry is cached so this only makes
+    one API call at startup.
+    """
+    import logging
+    from .core.bridge.chain_registry import init_chain_registry
+
+    logger = logging.getLogger(__name__)
+    try:
+        registry = await init_chain_registry()
+        logger.info(
+            "Chain registry initialized: %d chains available",
+            registry.chain_count,
+        )
+    except Exception as e:
+        logger.warning("Failed to initialize chain registry: %s", e)
+
+
+@app.on_event("startup")
 async def _start_runtime() -> None:
     if not settings.agent_runtime_enabled:
         return

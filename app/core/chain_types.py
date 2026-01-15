@@ -75,16 +75,13 @@ def normalize_to_chain_id(chain: str | int | None) -> ChainId:
         return SOLANA_CHAIN_ID
 
     # EVM chain aliases -> chain ID mapping
-    # Import here to avoid circular dependency
-    from ..core.bridge.constants import CHAIN_ALIAS_TO_ID, DEFAULT_CHAIN_NAME_TO_ID
+    # Use dynamic ChainRegistry instead of hardcoded constants
+    from ..core.bridge.chain_registry import get_registry_sync
 
-    # Check alias map first
-    if chain_lower in CHAIN_ALIAS_TO_ID:
-        return CHAIN_ALIAS_TO_ID[chain_lower]
-
-    # Check default name map
-    if chain_lower in DEFAULT_CHAIN_NAME_TO_ID:
-        return DEFAULT_CHAIN_NAME_TO_ID[chain_lower]
+    registry = get_registry_sync()
+    resolved = registry.get_chain_id(chain_lower)
+    if resolved is not None:
+        return resolved
 
     # Try parsing as integer
     try:
@@ -108,14 +105,10 @@ def chain_id_to_name(chain_id: ChainId) -> str:
     if chain_id == SOLANA_CHAIN_ID:
         return "Solana"
 
-    # Import here to avoid circular dependency
-    from ..core.bridge.constants import CHAIN_METADATA
+    # Use dynamic ChainRegistry instead of hardcoded constants
+    from ..core.bridge.chain_registry import get_registry_sync
 
-    metadata = CHAIN_METADATA.get(chain_id)
-    if metadata:
-        return metadata.get("name", f"Chain {chain_id}")
-
-    return f"Chain {chain_id}"
+    return get_registry_sync().get_chain_name(chain_id)
 
 
 __all__ = [

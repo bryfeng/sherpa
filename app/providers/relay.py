@@ -86,3 +86,18 @@ class RelayProvider:
         path = f"/requests/{request_id}/signature/v2"
         resp = await self._request("GET", path)
         return resp.json()
+
+    async def get_chains(self) -> List[Dict[str, Any]]:
+        """Fetch all supported chains from Relay.
+
+        Returns a list of chain objects with metadata including:
+        - id: Chain ID (e.g., 1 for Ethereum, 57073 for Ink)
+        - name: Internal name
+        - displayName: Human-readable name
+        - currency: Native token info (symbol, decimals, address)
+        - httpRpcUrl, explorerUrl: Network endpoints
+        - depositEnabled, disabled: Availability status
+        """
+        resp = await self._request("GET", "/chains")
+        data = resp.json()
+        return data.get("chains", [])
