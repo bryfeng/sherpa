@@ -6,10 +6,11 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from ..cache import cache
-from ..providers.alchemy import AlchemyProvider
+from ..providers.alchemy import AlchemyProvider, UnsupportedChainError
 from ..providers.coingecko import CoingeckoProvider
 from ..providers.solana import SolanaProvider
-from ..services.address import is_evm_chain, normalize_chain
+from ..services.address import normalize_chain
+from ..services.chains import get_chain_service
 from ..types import Portfolio, Source, TokenBalance, ToolEnvelope
 
 CACHE_TTL_SECONDS = 300
@@ -29,16 +30,9 @@ async def get_portfolio(address: str, chain: str = "ethereum") -> ToolEnvelope:
 
     if normalized_chain == "solana":
         result = await _solana_portfolio(address, start_time)
-    elif is_evm_chain(normalized_chain):
-        result = await _evm_portfolio(address, normalized_chain, start_time)
     else:
-        result = ToolEnvelope(
-            data=None,
-            sources=[],
-            fetched_at=start_time,
-            cached=False,
-            warnings=[f"Chain '{normalized_chain}' is not supported"],
-        )
+        # Try EVM chains - the chain service will validate if supported
+        result = await _evm_portfolio(address, normalized_chain, start_time)
 
     if result.data is not None:
         await cache.set(cache_key, result, ttl=CACHE_TTL_SECONDS)
@@ -53,16 +47,26 @@ async def _evm_portfolio(address: str, chain: str, start_time: datetime) -> Tool
     try:
         alchemy = AlchemyProvider()
         coingecko = CoingeckoProvider()
+        chain_service = get_chain_service()
 
         if not await alchemy.ready():
             raise RuntimeError("Alchemy provider not available")
+
+        # Get chain config for native token info
+        chain_config = await chain_service.resolve_alias(chain)
+        if chain_config:
+            native_symbol = chain_config.native_symbol
+            native_name = f"{native_symbol} ({chain_config.name})"
+        else:
+            native_symbol = "ETH"
+            native_name = f"Native Token ({chain})"
 
         coingecko_ready = await coingecko.ready()
         if not coingecko_ready:
             warnings.append("Coingecko provider unavailable - prices may be missing")
 
-        eth_balance = await alchemy.get_native_balance(address, chain)
-        sources.append(Source(**eth_balance["_source"]))
+        native_balance = await alchemy.get_native_balance(address, chain)
+        sources.append(Source(**native_balance["_source"]))
 
         token_balances = await alchemy.get_token_balances(address, chain)
         token_addresses = [token["address"] for token in token_balances["tokens"]]
@@ -72,7 +76,7 @@ async def _evm_portfolio(address: str, chain: str, start_time: datetime) -> Tool
             batch_size = 10
             for i in range(0, len(token_addresses), batch_size):
                 batch = token_addresses[i : i + batch_size]
-                metadata_tasks.append(alchemy.get_token_metadata(batch))
+                metadata_tasks.append(alchemy.get_token_metadata(batch, chain))
 
         metadata_results = await asyncio.gather(*metadata_tasks, return_exceptions=True)
         all_metadata: Dict[str, Dict[str, Any]] = {}
@@ -83,9 +87,10 @@ async def _evm_portfolio(address: str, chain: str, start_time: datetime) -> Tool
         prices: Dict[str, Decimal] = {}
         if coingecko_ready:
             try:
+                # Get native token price (ETH for most chains)
                 eth_price = await coingecko.get_eth_price()
                 if eth_price:
-                    prices["ETH"] = Decimal(str(eth_price["price_usd"]))
+                    prices[native_symbol] = Decimal(str(eth_price["price_usd"]))
                     sources.append(Source(**eth_price["_source"]))
 
                 if token_addresses:
@@ -97,20 +102,20 @@ async def _evm_portfolio(address: str, chain: str, start_time: datetime) -> Tool
 
         tokens: List[TokenBalance] = []
 
-        eth_balance_wei = int(eth_balance["balance_wei"])
-        eth_balance_formatted = f"{eth_balance_wei / 10**18:.6f}"
-        eth_price = prices.get("ETH")
-        eth_value = (Decimal(eth_balance_formatted) * eth_price) if eth_price else None
+        native_balance_wei = int(native_balance["balance_wei"])
+        native_balance_formatted = f"{native_balance_wei / 10**18:.6f}"
+        native_price = prices.get(native_symbol)
+        native_value = (Decimal(native_balance_formatted) * native_price) if native_price else None
         tokens.append(
             TokenBalance(
-                symbol="ETH",
-                name="Ethereum",
+                symbol=native_symbol,
+                name=native_name,
                 address=None,
                 decimals=18,
-                balance_wei=str(eth_balance_wei),
-                balance_formatted=eth_balance_formatted,
-                price_usd=eth_price,
-                value_usd=eth_value,
+                balance_wei=str(native_balance_wei),
+                balance_formatted=native_balance_formatted,
+                price_usd=native_price,
+                value_usd=native_value,
             )
         )
 
@@ -160,6 +165,14 @@ async def _evm_portfolio(address: str, chain: str, start_time: datetime) -> Tool
             warnings=warnings,
         )
 
+    except UnsupportedChainError as exc:
+        return ToolEnvelope(
+            data=None,
+            sources=sources,
+            fetched_at=start_time,
+            cached=False,
+            warnings=[f"Chain not supported: {exc}"],
+        )
     except Exception as exc:
         return ToolEnvelope(
             data=None,
