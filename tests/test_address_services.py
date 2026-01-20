@@ -1,4 +1,4 @@
-from sherpa.app.services.address import (
+from app.services.address import (
     normalize_chain,
     is_supported_chain,
     is_valid_address_for_chain,
@@ -18,7 +18,9 @@ def test_normalize_chain_aliases():
 def test_supported_chain_flags():
     assert is_supported_chain("ethereum") is True
     assert is_supported_chain("solana") is True
-    assert is_supported_chain("base") is False
+    assert is_supported_chain("base") is True
+    assert is_supported_chain("polygon") is True
+    assert is_supported_chain("avalanche") is False
 
 
 def test_address_validation_evm():

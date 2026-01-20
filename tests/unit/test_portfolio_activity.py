@@ -18,10 +18,10 @@ class _DummyResponse:
 
 
 class _DummyClient:
-    last_request = None
+    last_requests = []
 
     def __init__(self, *_, **__):
-        pass
+        _DummyClient.last_requests = []
 
     async def __aenter__(self):
         return self
@@ -30,18 +30,34 @@ class _DummyClient:
         return False
 
     async def post(self, url, json):
-        _DummyClient.last_request = {"url": url, "json": json}
-        transfer = {
-            "hash": "0x1",
-            "from": json["params"][0]["fromAddress"],
-            "to": "0xabc",
-            "asset": "ETH",
-            "value": 1,
-            "category": "external",
-            "rawContract": {"value": "0xde0b6b3a7640000", "address": None, "decimal": "0x12"},
-            "metadata": {"blockTimestamp": "2025-01-01T00:00:00.000Z"},
-        }
-        return _DummyResponse({"result": {"transfers": [transfer]}})
+        _DummyClient.last_requests.append({"url": url, "json": json})
+        params = json["params"][0]
+        # Handle both outgoing (fromAddress) and incoming (toAddress) requests
+        if "fromAddress" in params:
+            transfer = {
+                "hash": "0x1",
+                "from": params["fromAddress"],
+                "to": "0xabc",
+                "asset": "ETH",
+                "value": 1,
+                "category": "external",
+                "rawContract": {"value": "0xde0b6b3a7640000", "address": None, "decimal": "0x12"},
+                "metadata": {"blockTimestamp": "2025-01-01T00:00:00.000Z"},
+            }
+            return _DummyResponse({"result": {"transfers": [transfer]}})
+        elif "toAddress" in params:
+            transfer = {
+                "hash": "0x2",
+                "from": "0xdef",
+                "to": params["toAddress"],
+                "asset": "ETH",
+                "value": 2,
+                "category": "external",
+                "rawContract": {"value": "0xde0b6b3a7640000", "address": None, "decimal": "0x12"},
+                "metadata": {"blockTimestamp": "2025-01-02T00:00:00.000Z"},
+            }
+            return _DummyResponse({"result": {"transfers": [transfer]}})
+        return _DummyResponse({"result": {"transfers": []}})
 
 
 @pytest.mark.asyncio
@@ -52,6 +68,15 @@ async def test_fetch_activity_defaults_to_limit_of_ten(monkeypatch):
         captured["limit"] = limit
         return []
 
+    # Mock the chain service to return a valid chain config
+    class FakeChainConfig:
+        alchemy_slug = "eth-mainnet"
+
+    class FakeChainService:
+        async def resolve_alias(self, chain):
+            return FakeChainConfig()
+
+    monkeypatch.setattr(pa, "get_chain_service", lambda: FakeChainService())
     monkeypatch.setattr(pa, "_fetch_evm_activity", fake_fetch)
     await pa.fetch_activity(
         address="0x123",
@@ -64,8 +89,15 @@ async def test_fetch_activity_defaults_to_limit_of_ten(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fetch_evm_activity_uses_from_only(monkeypatch):
+async def test_fetch_evm_activity_fetches_both_directions(monkeypatch):
+    """Test that EVM activity fetches both outgoing and incoming transfers."""
     pa.settings.alchemy_api_key = "test"
+
+    # Mock the Alchemy URL resolution to avoid Convex calls
+    async def fake_resolve_url(chain):
+        return "https://eth-mainnet.g.alchemy.com/v2/test"
+
+    monkeypatch.setattr(pa, "_resolve_alchemy_url", fake_resolve_url)
     monkeypatch.setattr(pa.httpx, "AsyncClient", _DummyClient)
 
     events = await pa._fetch_evm_activity(
@@ -76,10 +108,18 @@ async def test_fetch_evm_activity_uses_from_only(monkeypatch):
         limit=10,
     )
 
-    assert _DummyClient.last_request is not None
-    request_filter = _DummyClient.last_request["json"]["params"][0]
-    assert "fromAddress" in request_filter
-    assert "toAddress" not in request_filter
-    assert request_filter["maxCount"] == hex(10)
-    assert len(events) == 1
-    assert events[0].timestamp == datetime(2025, 1, 1, tzinfo=timezone.utc)
+    # Should make 2 requests: one for outgoing (fromAddress), one for incoming (toAddress)
+    assert len(_DummyClient.last_requests) == 2
+
+    outgoing_req = _DummyClient.last_requests[0]["json"]["params"][0]
+    incoming_req = _DummyClient.last_requests[1]["json"]["params"][0]
+
+    assert "fromAddress" in outgoing_req
+    assert "toAddress" in incoming_req
+    assert outgoing_req["maxCount"] == hex(10)
+
+    # Should return deduplicated events from both directions
+    assert len(events) == 2
+    timestamps = {e.timestamp for e in events}
+    assert datetime(2025, 1, 1, tzinfo=timezone.utc) in timestamps
+    assert datetime(2025, 1, 2, tzinfo=timezone.utc) in timestamps

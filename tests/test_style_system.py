@@ -109,7 +109,7 @@ async def test_style_management_system():
         return
     
     # Initialize components
-    llm_provider = AnthropicProvider(api_key=settings.anthropic_api_key)
+    llm_provider = AnthropicProvider(api_key=settings.anthropic_api_key, model="claude-sonnet-4-20250514")
     persona_manager = PersonaManager()
     context_manager = ContextManager()
     agent = Agent(

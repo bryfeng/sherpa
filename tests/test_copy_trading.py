@@ -351,19 +351,28 @@ class TestCopyExecutor:
 
     @pytest.mark.asyncio
     async def test_execute_solana(self, sample_signal):
-        """Routes Solana swaps to Jupiter."""
+        """Routes Solana swaps to Jupiter (returns unsigned tx for manual approval)."""
+        # Mock Jupiter provider with all required methods
+        mock_token_provider = MagicMock()
+        mock_token_provider.get_token_price = AsyncMock(return_value=1.0)  # $1 per token
+        mock_token_provider.get_token_by_mint = AsyncMock(return_value=MagicMock(decimals=9))
+
+        mock_quote = MagicMock()
+        mock_quote.out_amount = 200000000000
+        mock_quote.price_impact_pct = 0.1
+        mock_quote.route_plan = []
+        mock_quote.quote_response = {"test": "quote"}
+
+        mock_swap_result = MagicMock()
+        mock_swap_result.swap_transaction = "base64encodedtx"
+        mock_swap_result.last_valid_block_height = 12345
+        mock_swap_result.priority_fee_lamports = 1000
+        mock_swap_result.compute_unit_limit = 200000
+
         mock_jupiter = MagicMock()
-        mock_jupiter.get_quote = AsyncMock(return_value={
-            "inputAmount": "100000000",
-            "outputAmount": "200000000",
-        })
-        mock_jupiter.execute_swap = AsyncMock(return_value={
-            "success": True,
-            "txHash": "0xsolana123",
-            "valueUsd": 100,
-            "outputAmount": 200,
-            "actualSlippageBps": 50,
-        })
+        mock_jupiter._token_provider = mock_token_provider
+        mock_jupiter.get_swap_quote = AsyncMock(return_value=mock_quote)
+        mock_jupiter.build_swap_transaction = AsyncMock(return_value=mock_swap_result)
 
         executor = CopyExecutor(jupiter_provider=mock_jupiter)
 
@@ -375,9 +384,11 @@ class TestCopyExecutor:
             follower_chain="solana",
         )
 
+        # Manual approval flow: returns unsigned transaction
         assert result.success is True
-        assert result.tx_hash == "0xsolana123"
-        mock_jupiter.get_quote.assert_called_once()
+        assert result.requires_signature is True
+        assert result.unsigned_transaction == "base64encodedtx"
+        mock_jupiter.get_swap_quote.assert_called_once()
 
     def test_chain_to_id(self):
         """Chain name to ID mapping."""
@@ -479,7 +490,7 @@ class TestCopyTradingManager:
 
     @pytest.mark.asyncio
     async def test_handle_trade_signal_with_followers(self, mock_manager, sample_config, sample_signal):
-        """Executions created for followers."""
+        """Executions created for followers (pending approval flow)."""
         # Start following
         await mock_manager.start_copying(
             user_id="user123",
@@ -488,10 +499,11 @@ class TestCopyTradingManager:
             config=sample_config,
         )
 
-        # Handle signal
+        # Handle signal - creates pending approval execution
         executions = await mock_manager.handle_trade_signal(sample_signal)
         assert len(executions) == 1
-        assert executions[0].status == CopyExecutionStatus.COMPLETED
+        # Manual approval flow: executions start as PENDING_APPROVAL
+        assert executions[0].status == CopyExecutionStatus.PENDING_APPROVAL
 
     @pytest.mark.asyncio
     async def test_handle_trade_signal_blacklisted_token(self, mock_manager, sample_config, sample_signal):
@@ -542,8 +554,8 @@ class TestCopyTradingManager:
 
         stats = await mock_manager.get_user_stats("user123")
         assert stats.active_relationships == 1
-        assert stats.total_copy_trades == 1
-        assert stats.successful_trades == 1
+        # Manual approval flow: trades are pending, not yet completed
+        # Stats reflect only confirmed trades, pending ones are tracked separately
 
 
 # =============================================================================
@@ -645,7 +657,7 @@ class TestCopyTradingIntegration:
 
     @pytest.mark.asyncio
     async def test_full_copy_flow(self, sample_config, sample_signal):
-        """Test complete flow from setup to execution."""
+        """Test complete flow from setup to pending approval."""
         # Setup
         executor = MockCopyExecutor(success_rate=1.0)
         manager = CopyTradingManager(convex_client=None, executor=executor)
@@ -660,16 +672,12 @@ class TestCopyTradingIntegration:
 
         assert relationship.is_active
 
-        # Simulate leader trade
+        # Simulate leader trade - creates pending approval
         executions = await manager.handle_trade_signal(sample_signal)
 
         assert len(executions) == 1
-        assert executions[0].status == CopyExecutionStatus.COMPLETED
-
-        # Check stats updated
-        assert relationship.total_trades == 1
-        assert relationship.successful_trades == 1
-        assert relationship.total_volume_usd > 0
+        # Manual approval flow: executions start as PENDING_APPROVAL
+        assert executions[0].status == CopyExecutionStatus.PENDING_APPROVAL
 
         # Stop copying
         stopped = await manager.stop_copying(relationship.id)
@@ -694,12 +702,12 @@ class TestCopyTradingIntegration:
                 config=sample_config,
             )
 
-        # Leader trades
+        # Leader trades - creates pending approvals for all followers
         executions = await manager.handle_trade_signal(sample_signal)
 
-        # All three should execute
+        # All three should have pending approval executions
         assert len(executions) == 3
-        assert all(e.status == CopyExecutionStatus.COMPLETED for e in executions)
+        assert all(e.status == CopyExecutionStatus.PENDING_APPROVAL for e in executions)
 
     @pytest.mark.asyncio
     async def test_different_sizing_strategies(self, sample_config, sample_signal):
