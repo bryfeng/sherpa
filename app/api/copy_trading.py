@@ -264,7 +264,8 @@ def get_copy_trading_manager() -> CopyTradingManager:
     global _manager
     if _manager is None:
         convex = get_convex_client()
-        executor = CopyExecutor()
+        # Use executor with real providers (Jupiter + Relay)
+        executor = CopyExecutor.create_with_providers()
         _manager = CopyTradingManager(
             convex_client=convex,
             executor=executor,
@@ -671,6 +672,219 @@ async def estimate_copy_execution(
 
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# =============================================================================
+# Manual Approval Flow Endpoints
+# =============================================================================
+
+
+class ApproveExecutionResponse(BaseModel):
+    """Response when approving a copy execution."""
+
+    execution_id: str = Field(..., alias="executionId")
+    status: str
+    unsigned_transaction: Optional[str] = Field(None, alias="unsignedTransaction")
+    transaction_data: Optional[Dict[str, Any]] = Field(None, alias="transactionData")
+    quote_response: Optional[Dict[str, Any]] = Field(None, alias="quoteResponse")
+    input_amount: Optional[float] = Field(None, alias="inputAmount")
+    output_amount: Optional[float] = Field(None, alias="outputAmount")
+    price_impact_pct: Optional[float] = Field(None, alias="priceImpactPct")
+    last_valid_block_height: Optional[int] = Field(None, alias="lastValidBlockHeight")
+    expires_at: Optional[datetime] = Field(None, alias="expiresAt")
+    chain: str
+    error_message: Optional[str] = Field(None, alias="errorMessage")
+
+    class Config:
+        populate_by_name = True
+
+
+class ConfirmExecutionRequest(BaseModel):
+    """Request to confirm a copy execution after frontend signing."""
+
+    tx_hash: str = Field(..., alias="txHash", description="Signed transaction hash")
+
+    class Config:
+        populate_by_name = True
+
+
+class RejectExecutionRequest(BaseModel):
+    """Request to reject a pending copy execution."""
+
+    reason: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+
+
+@router.get("/executions/pending/{user_id}", response_model=List[CopyExecutionResponse])
+async def get_pending_executions(
+    user_id: str,
+    manager: CopyTradingManager = Depends(get_copy_trading_manager),
+):
+    """Get all pending approval copy executions for a user."""
+    executions = await manager.get_pending_approvals(user_id)
+    return [_execution_to_response(e) for e in executions]
+
+
+@router.post("/executions/{execution_id}/approve", response_model=ApproveExecutionResponse)
+async def approve_execution(
+    execution_id: str,
+    user_id: str = Query(..., alias="userId"),
+    manager: CopyTradingManager = Depends(get_copy_trading_manager),
+):
+    """
+    Approve a pending copy execution and get unsigned transaction.
+
+    Returns the unsigned transaction for the frontend to sign and submit.
+    After frontend signs, call POST /executions/{execution_id}/confirm with the tx hash.
+    """
+    try:
+        # Get the execution
+        execution = await manager._load_execution(execution_id)
+        if not execution:
+            raise HTTPException(status_code=404, detail="Execution not found")
+
+        # Verify ownership via relationship
+        relationship = manager.get_relationship(execution.relationship_id)
+        if not relationship or relationship.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to approve this execution")
+
+        # Check status
+        if execution.status != CopyExecutionStatus.PENDING_APPROVAL:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Execution is not pending approval (status: {execution.status.value})"
+            )
+
+        # Get quote using executor
+        quote_result = await manager.executor.get_quote(
+            signal=execution.signal,
+            size_usd=execution.calculated_size_usd or Decimal("0"),
+            follower_address=relationship.follower_address,
+            follower_chain=relationship.follower_chain,
+            max_slippage_bps=relationship.config.max_slippage_bps,
+        )
+
+        if not quote_result.success:
+            # Update execution status to failed
+            execution.status = CopyExecutionStatus.FAILED
+            execution.error_message = quote_result.error_message
+            await manager._save_execution(execution)
+
+            return ApproveExecutionResponse(
+                executionId=execution_id,
+                status="failed",
+                chain=relationship.follower_chain,
+                errorMessage=quote_result.error_message,
+            )
+
+        # Update execution to QUEUED (waiting for signed tx)
+        execution.status = CopyExecutionStatus.QUEUED
+        execution.execution_started_at = datetime.now()
+        await manager._save_execution(execution)
+
+        return ApproveExecutionResponse(
+            executionId=execution_id,
+            status="queued",
+            unsignedTransaction=quote_result.unsigned_transaction,
+            transactionData=quote_result.transaction_data,
+            quoteResponse=quote_result.quote_response,
+            inputAmount=float(quote_result.input_amount) if quote_result.input_amount else None,
+            outputAmount=float(quote_result.output_amount) if quote_result.output_amount else None,
+            priceImpactPct=quote_result.price_impact_pct,
+            lastValidBlockHeight=quote_result.last_valid_block_height,
+            expiresAt=quote_result.expires_at,
+            chain=relationship.follower_chain,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/executions/{execution_id}/confirm", response_model=CopyExecutionResponse)
+async def confirm_execution(
+    execution_id: str,
+    request: ConfirmExecutionRequest,
+    user_id: str = Query(..., alias="userId"),
+    manager: CopyTradingManager = Depends(get_copy_trading_manager),
+):
+    """
+    Confirm a copy execution after frontend has signed and submitted the transaction.
+
+    Call this after receiving the unsigned transaction from /approve,
+    signing it with the user's wallet, and submitting it to the chain.
+    """
+    try:
+        # Get the execution
+        execution = await manager._load_execution(execution_id)
+        if not execution:
+            raise HTTPException(status_code=404, detail="Execution not found")
+
+        # Verify ownership via relationship
+        relationship = manager.get_relationship(execution.relationship_id)
+        if not relationship or relationship.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to confirm this execution")
+
+        # Check status
+        if execution.status != CopyExecutionStatus.QUEUED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Execution is not queued (status: {execution.status.value})"
+            )
+
+        # Update execution with tx hash
+        execution.status = CopyExecutionStatus.COMPLETED
+        execution.tx_hash = request.tx_hash
+        execution.execution_completed_at = datetime.now()
+
+        # Calculate delay
+        if execution.signal_received_at and execution.execution_completed_at:
+            delay = (execution.execution_completed_at - execution.signal_received_at).total_seconds()
+            execution.execution_delay_seconds = delay
+
+        await manager._save_execution(execution)
+
+        # Update relationship stats
+        relationship.successful_trades += 1
+        relationship.total_trades += 1
+        if execution.actual_size_usd:
+            relationship.total_volume_usd += execution.actual_size_usd
+            relationship.daily_volume_usd += execution.actual_size_usd
+        relationship.daily_trade_count += 1
+        relationship.last_copy_at = datetime.now()
+        await manager._save_relationship(relationship)
+
+        return _execution_to_response(execution)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/executions/{execution_id}/reject", response_model=CopyExecutionResponse)
+async def reject_execution(
+    execution_id: str,
+    request: RejectExecutionRequest,
+    user_id: str = Query(..., alias="userId"),
+    manager: CopyTradingManager = Depends(get_copy_trading_manager),
+):
+    """Reject a pending copy execution."""
+    try:
+        execution = await manager.reject_execution(
+            execution_id=execution_id,
+            user_id=user_id,
+            reason=request.reason,
+        )
+        return _execution_to_response(execution)
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================

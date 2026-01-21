@@ -64,6 +64,16 @@ class Settings(BaseSettings):
         description="Base URL for Solana balances API",
     )
 
+    # Birdeye Provider (DeFi analytics, top traders)
+    birdeye_api_key: str = Field(
+        default="",
+        description="Birdeye API key for DeFi analytics and trader discovery",
+    )
+    enable_birdeye: bool = Field(
+        default=True,
+        description="Enable Birdeye provider for trader analytics",
+    )
+
     # Webhook Configuration (Event Monitoring)
     alchemy_webhook_signing_key: str = Field(
         default="",

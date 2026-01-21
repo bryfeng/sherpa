@@ -1,4 +1,4 @@
-"""SwapManager orchestrates Relay-powered token swaps."""
+"""SwapManager orchestrates Relay-powered token swaps and Jupiter swaps for Solana."""
 
 from __future__ import annotations
 
@@ -12,6 +12,15 @@ import httpx
 
 from ...providers.relay import RelayProvider
 from ...providers.coingecko import CoingeckoProvider
+from ...providers.jupiter import (
+    JupiterSwapProvider,
+    JupiterQuote,
+    JupiterSwapResult,
+    JupiterQuoteError,
+    JupiterSwapError,
+    get_jupiter_swap_provider,
+    NATIVE_SOL_MINT,
+)
 from ...types.requests import ChatRequest
 from ..bridge.constants import NATIVE_PLACEHOLDER
 from ..bridge.chain_registry import get_registry_sync, ChainId
@@ -22,22 +31,32 @@ from .constants import (
     SWAP_SOURCE,
     TOKEN_ALIAS_MAP,
     TOKEN_REGISTRY,
+    SOLANA_CHAIN_ID,
+    is_solana_chain,
 )
-from .models import SwapResult, SwapState
+from .models import SwapResult, SwapState, SolanaSwapQuote
+
+
+JUPITER_SWAP_SOURCE = {'name': 'Jupiter', 'url': 'https://jup.ag'}
 
 
 class SwapManager:
-    """Encapsulates swap intent parsing, quoting, and response shaping."""
+    """Encapsulates swap intent parsing, quoting, and response shaping.
+
+    Supports both EVM swaps (via Relay) and Solana swaps (via Jupiter).
+    """
 
     def __init__(
         self,
         *,
         logger: Optional[logging.Logger] = None,
         price_provider: Optional[CoingeckoProvider] = None,
+        jupiter_provider: Optional[JupiterSwapProvider] = None,
     ) -> None:
         self._logger = logger or logging.getLogger(__name__)
         self._pending: Dict[str, SwapState] = {}
         self._price_provider = price_provider or CoingeckoProvider()
+        self._jupiter_provider = jupiter_provider
 
     async def maybe_handle(
         self,
@@ -137,7 +156,7 @@ class SwapManager:
         if chain_id not in TOKEN_REGISTRY:
             return finalize_result(
                 'unsupported_chain',
-                message='I can only quote swaps on Ethereum mainnet right now. Try “swap 0.5 ETH to USDC on Ethereum”.',
+                message='I can only quote swaps on Ethereum or Solana right now. Try "swap 0.5 ETH to USDC on Ethereum" or "swap 1 SOL to USDC on Solana".',
                 context_updates={'wallet_address': wallet},
             )
 
@@ -313,6 +332,21 @@ class SwapManager:
                 },
             )
 
+        # Dispatch to Jupiter for Solana swaps
+        if is_solana_chain(chain_id):
+            return await self._handle_solana_swap(
+                wallet=wallet,
+                token_in_meta=token_in_meta,
+                token_out_meta=token_out_meta,
+                amount_decimal=amount_decimal,
+                conversation_id=conversation_id,
+                context=context,
+                latest=latest,
+                usd_amount=usd_amount,
+                percent_fraction=percent_fraction,
+            )
+
+        # EVM swap via Relay
         amount_base_units_str = str(amount_base_units)
 
         relay_payload: Dict[str, Any] = {
@@ -652,14 +686,15 @@ class SwapManager:
 
     def _supported_tokens_string(
         self,
-        chain_id: int,
+        chain_id: ChainId,
         extra_tokens: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> str:
         tokens = {symbol.upper(): meta for symbol, meta in TOKEN_REGISTRY.get(chain_id, {}).items()}
         if extra_tokens:
             for symbol, meta in extra_tokens.items():
                 tokens.setdefault(symbol.upper(), meta)
-        return ', '.join(sorted(tokens.keys())) if tokens else 'ETH'
+        default_token = 'SOL' if is_solana_chain(chain_id) else 'ETH'
+        return ', '.join(sorted(tokens.keys())) if tokens else default_token
 
     def _parse_swap_request(
         self,
@@ -743,7 +778,7 @@ class SwapManager:
 
     def _resolve_token(
         self,
-        chain_id: int,
+        chain_id: ChainId,
         token_hint: Optional[str],
         extra_tokens: Optional[Dict[str, Dict[str, Any]]] = None,
         extra_aliases: Optional[Dict[str, str]] = None,
@@ -1070,3 +1105,206 @@ class SwapManager:
             normalized_steps.append(step_entry)
 
         return normalized_steps, transactions, approvals, signatures
+
+    async def _handle_solana_swap(
+        self,
+        wallet: str,
+        token_in_meta: Dict[str, Any],
+        token_out_meta: Dict[str, Any],
+        amount_decimal: Decimal,
+        conversation_id: str,
+        context: Dict[str, Any],
+        latest: str,
+        usd_amount: Optional[Decimal] = None,
+        percent_fraction: Optional[Decimal] = None,
+    ) -> Dict[str, Any]:
+        """Handle a Solana swap via Jupiter.
+
+        Returns a result dict with the Jupiter quote and unsigned transaction.
+        """
+        input_mint = str(token_in_meta['address'])
+        output_mint = str(token_out_meta['address'])
+        input_decimals = int(token_in_meta['decimals'])
+        output_decimals = int(token_out_meta['decimals'])
+
+        # Convert to lamports/smallest units
+        amount_base_units = self._to_base_units(amount_decimal, input_decimals)
+        if amount_base_units is None or amount_base_units <= 0:
+            return {
+                'status': 'needs_amount',
+                'message': 'The swap amount is too small for Solana. Try a larger amount.',
+            }
+
+        # Get or create Jupiter provider
+        jupiter = self._jupiter_provider or get_jupiter_swap_provider()
+
+        panel_payload: Dict[str, Any] = {
+            'status': 'pending',
+            'chain_id': SOLANA_CHAIN_ID,
+            'chain': 'Solana',
+            'wallet': {'address': wallet},
+            'provider': 'jupiter',
+            'quote_type': 'swap',
+            'tokens': {
+                'input': token_in_meta,
+                'output': token_out_meta,
+            },
+            'amounts': {
+                'input': str(amount_decimal),
+                'input_base_units': str(amount_base_units),
+            },
+        }
+        if percent_fraction is not None:
+            panel_payload['amounts']['input_share_percent'] = self._decimal_to_str(percent_fraction * Decimal('100'))
+        if usd_amount is not None:
+            panel_payload['amounts']['input_usd'] = self._decimal_to_str(usd_amount)
+
+        context_updates = {
+            'wallet_address': wallet,
+            'chain_id': SOLANA_CHAIN_ID,
+            'token_in_symbol': token_in_meta['symbol'],
+            'token_out_symbol': token_out_meta['symbol'],
+            'input_amount': str(amount_decimal),
+            'token_in_address': input_mint,
+            'token_out_address': output_mint,
+        }
+        if usd_amount is not None:
+            context_updates['input_amount_usd'] = str(usd_amount)
+        if percent_fraction is not None:
+            context_updates['input_amount_percent'] = self._decimal_to_str(percent_fraction * Decimal('100'))
+
+        # Get quote from Jupiter
+        try:
+            quote: JupiterQuote = await jupiter.get_swap_quote(
+                input_mint=input_mint,
+                output_mint=output_mint,
+                amount=amount_base_units,
+                slippage_bps=50,  # 0.5% default slippage
+            )
+        except JupiterQuoteError as exc:
+            self._logger.warning('Jupiter quote error: %s', exc)
+            panel_payload['status'] = 'error'
+            panel_payload.setdefault('issues', []).append(str(exc))
+            panel = {
+                'id': 'jupiter_swap_quote',
+                'kind': 'card',
+                'title': f"Jupiter Swap: {token_in_meta['symbol']} → {token_out_meta['symbol']}",
+                'payload': panel_payload,
+                'sources': [JUPITER_SWAP_SOURCE],
+                'metadata': {'status': 'error'},
+            }
+            return {'status': 'error', 'message': f'Jupiter could not produce a swap route: {exc}', 'panel': panel}
+
+        # Build the swap transaction
+        try:
+            swap_result: JupiterSwapResult = await jupiter.build_swap_transaction(
+                quote=quote,
+                user_public_key=wallet,
+            )
+        except JupiterSwapError as exc:
+            self._logger.warning('Jupiter swap build error: %s', exc)
+            panel_payload['status'] = 'error'
+            panel_payload.setdefault('issues', []).append(str(exc))
+            panel = {
+                'id': 'jupiter_swap_quote',
+                'kind': 'card',
+                'title': f"Jupiter Swap: {token_in_meta['symbol']} → {token_out_meta['symbol']}",
+                'payload': panel_payload,
+                'sources': [JUPITER_SWAP_SOURCE],
+                'metadata': {'status': 'error'},
+            }
+            return {'status': 'error', 'message': f'Jupiter could not build swap transaction: {exc}', 'panel': panel}
+
+        # Calculate output amounts
+        output_amount_decimal = Decimal(str(quote.out_amount)) / (Decimal(10) ** output_decimals)
+        min_output_decimal = Decimal(str(quote.other_amount_threshold)) / (Decimal(10) ** output_decimals)
+
+        # Update panel with quote details
+        panel_payload.update({
+            'status': 'ok',
+            'tx_ready': True,
+            'quote_expiry': None,  # Jupiter quotes are short-lived (~30s)
+            'solana_tx': swap_result.swap_transaction,
+            'last_valid_block_height': swap_result.last_valid_block_height,
+            'priority_fee_lamports': swap_result.priority_fee_lamports,
+            'compute_unit_limit': swap_result.compute_unit_limit,
+        })
+
+        panel_payload['breakdown'] = {
+            'input': {
+                'symbol': token_in_meta['symbol'],
+                'amount': self._decimal_to_str(amount_decimal),
+                'token_address': input_mint,
+            },
+            'output': {
+                'symbol': token_out_meta['symbol'],
+                'amount_estimate': self._decimal_to_str(output_amount_decimal),
+                'min_amount': self._decimal_to_str(min_output_decimal),
+                'token_address': output_mint,
+            },
+            'fees': {
+                'priority_fee_lamports': swap_result.priority_fee_lamports,
+                'slippage_bps': quote.slippage_bps,
+                'price_impact_pct': quote.price_impact_pct,
+            },
+        }
+
+        panel_payload['instructions'] = [
+            'Review the Jupiter swap quote including output estimate and price impact.',
+            f'Confirm the {token_in_meta["symbol"]} → {token_out_meta["symbol"]} transaction in your Solana wallet.',
+            'Sign the transaction to execute the swap.',
+            'Need fresh pricing? Ask "refresh swap quote".',
+        ]
+
+        panel_payload['actions'] = {
+            'refresh_quote': 'Say "refresh swap quote" to fetch an updated price.',
+            'open_wallet': 'Use your connected Solana wallet to sign and submit the swap.',
+        }
+
+        summary_lines = [
+            f"✅ Swap {self._decimal_to_str(amount_decimal)} {token_in_meta['symbol']} → {token_out_meta['symbol']} on Solana"
+        ]
+        if usd_amount is not None:
+            summary_lines.insert(0, f"🎯 Target ≈ ${self._decimal_to_str(usd_amount)} of {token_in_meta['symbol']}")
+        summary_lines.append(f"Estimated output: {self._decimal_to_str(output_amount_decimal)} {token_out_meta['symbol']}")
+        summary_lines.append(f"Minimum output: {self._decimal_to_str(min_output_decimal)} {token_out_meta['symbol']}")
+        if quote.price_impact_pct > 0.1:
+            summary_lines.append(f"⚠️ Price impact: {quote.price_impact_pct:.2f}%")
+        summary_lines.append('Confirm the swap in your connected Solana wallet when prompted.')
+
+        summary_reply = "\n".join(summary_lines)
+        summary_tool = f"Jupiter swap plan: {self._decimal_to_str(amount_decimal)} {token_in_meta['symbol']} → {token_out_meta['symbol']} on Solana"
+
+        panel = {
+            'id': 'jupiter_swap_quote',
+            'kind': 'card',
+            'title': f"Jupiter Swap: {token_in_meta['symbol']} → {token_out_meta['symbol']}",
+            'payload': panel_payload,
+            'sources': [JUPITER_SWAP_SOURCE],
+            'metadata': {'status': 'ok', 'chain': 'solana'},
+        }
+
+        # Store state for follow-ups
+        new_state = SwapState(
+            context={k: v for k, v in context_updates.items() if v is not None},
+            quote_params={'input_mint': input_mint, 'output_mint': output_mint, 'amount': amount_base_units},
+            last_prompt=latest,
+            status='ok',
+            panel=panel,
+            summary_reply=summary_reply,
+            summary_tool=summary_tool,
+            last_result={'status': 'ok', 'panel': panel},
+            solana_tx_base64=swap_result.swap_transaction,
+            last_valid_block_height=swap_result.last_valid_block_height,
+        )
+        self._pending[conversation_id] = new_state
+
+        return {
+            'status': 'ok',
+            'panel': panel,
+            'summary_reply': summary_reply,
+            'summary_tool': summary_tool,
+            'solana_tx': swap_result.swap_transaction,
+            'last_valid_block_height': swap_result.last_valid_block_height,
+            'is_solana': True,
+        }

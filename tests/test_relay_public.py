@@ -1,7 +1,7 @@
 """Smoke test for Relay's public quote endpoint.
 
 Usage:
-    python -m sherpa.tests.test_relay_public
+    python -m tests.test_relay_public
 
 The script fetches an ETH → Base quote and prints the returned transaction
 payload so we can verify the public integration works without an API key.
@@ -17,13 +17,12 @@ from typing import Any, Dict
 import httpx
 
 
-# Allow running via ``python -m sherpa.tests.test_relay_public`` (repo root)
-if 'sherpa' not in sys.modules:
-    repo_root = Path(__file__).resolve().parents[2]
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
+# Allow running from repo root
+repo_root = Path(__file__).resolve().parents[1]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 
-from sherpa.app.providers.relay import RelayProvider
+from app.providers.relay import RelayProvider
 
 
 QUOTE_PAYLOAD: Dict[str, Any] = {

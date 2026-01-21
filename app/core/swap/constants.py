@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Literal, Tuple, Union
 
 from ..bridge.constants import NATIVE_PLACEHOLDER
 from ..bridge.chain_registry import (
@@ -11,6 +11,17 @@ from ..bridge.chain_registry import (
     get_chain_metadata,
     ChainId,
 )
+
+# Solana-specific constants
+SOLANA_CHAIN_ID: Literal["solana"] = "solana"
+NATIVE_SOL_MINT = "So11111111111111111111111111111111111111112"
+
+
+def is_solana_chain(chain_id: ChainId) -> bool:
+    """Check if a chain ID represents Solana."""
+    if isinstance(chain_id, str):
+        return chain_id.lower() == "solana"
+    return False
 
 
 # Backwards-compatible lazy accessors for chain data
@@ -93,7 +104,8 @@ SWAP_SOURCE = {'name': 'Relay', 'url': 'https://relay.link'}
 
 # Minimal token registry keyed by chain ID → token symbol → metadata.
 # Addresses intentionally lowercased to simplify comparisons.
-TOKEN_REGISTRY: Dict[int, Dict[str, Dict[str, object]]] = {
+# Chain IDs: int for EVM, "solana" for Solana
+TOKEN_REGISTRY: Dict[Union[int, str], Dict[str, Dict[str, object]]] = {
     1: {  # Ethereum mainnet
         'ETH': {
             'symbol': 'ETH',
@@ -138,17 +150,89 @@ TOKEN_REGISTRY: Dict[int, Dict[str, Dict[str, object]]] = {
             'aliases': {'wbtc', 'wrapped btc', 'btc'},
         },
     },
+    'solana': {  # Solana
+        'SOL': {
+            'symbol': 'SOL',
+            'address': NATIVE_SOL_MINT,
+            'decimals': 9,
+            'is_native': True,
+            'aliases': {'sol', 'solana', 'native'},
+        },
+        'WSOL': {
+            'symbol': 'WSOL',
+            'address': NATIVE_SOL_MINT,
+            'decimals': 9,
+            'is_native': False,
+            'aliases': {'wsol', 'wrapped sol'},
+        },
+        'USDC': {
+            'symbol': 'USDC',
+            'address': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            'decimals': 6,
+            'is_native': False,
+            'aliases': {'usdc', 'usd coin'},
+        },
+        'USDT': {
+            'symbol': 'USDT',
+            'address': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+            'decimals': 6,
+            'is_native': False,
+            'aliases': {'usdt', 'tether'},
+        },
+        'BONK': {
+            'symbol': 'BONK',
+            'address': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
+            'decimals': 5,
+            'is_native': False,
+            'aliases': {'bonk'},
+        },
+        'JUP': {
+            'symbol': 'JUP',
+            'address': 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
+            'decimals': 6,
+            'is_native': False,
+            'aliases': {'jup', 'jupiter'},
+        },
+        'RAY': {
+            'symbol': 'RAY',
+            'address': '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R',
+            'decimals': 6,
+            'is_native': False,
+            'aliases': {'ray', 'raydium'},
+        },
+        'PYTH': {
+            'symbol': 'PYTH',
+            'address': 'HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3',
+            'decimals': 6,
+            'is_native': False,
+            'aliases': {'pyth'},
+        },
+        'JTO': {
+            'symbol': 'JTO',
+            'address': 'jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL',
+            'decimals': 9,
+            'is_native': False,
+            'aliases': {'jto', 'jito'},
+        },
+        'WIF': {
+            'symbol': 'WIF',
+            'address': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',
+            'decimals': 6,
+            'is_native': False,
+            'aliases': {'wif', 'dogwifhat'},
+        },
+    },
 }
 
 # Flattened alias map built at import time
-TOKEN_ALIAS_MAP: Dict[int, Dict[str, str]] = {}
-for chain_id, entries in TOKEN_REGISTRY.items():
+TOKEN_ALIAS_MAP: Dict[Union[int, str], Dict[str, str]] = {}
+for _chain_id, entries in TOKEN_REGISTRY.items():
     alias_map: Dict[str, str] = {}
     for symbol, metadata in entries.items():
         alias_map[symbol.lower()] = symbol
         for alias in metadata.get('aliases', set()):  # type: ignore[assignment]
             alias_map[str(alias).lower()] = symbol
-    TOKEN_ALIAS_MAP[chain_id] = alias_map
+    TOKEN_ALIAS_MAP[_chain_id] = alias_map
 
 GLOBAL_TOKEN_ALIASES: Dict[str, str] = {}
 for alias_map in TOKEN_ALIAS_MAP.values():
@@ -166,4 +250,7 @@ __all__ = [
     'CHAIN_METADATA',
     'DEFAULT_CHAIN_NAME_TO_ID',
     'NATIVE_PLACEHOLDER',
+    'SOLANA_CHAIN_ID',
+    'NATIVE_SOL_MINT',
+    'is_solana_chain',
 ]

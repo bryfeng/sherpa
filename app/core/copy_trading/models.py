@@ -14,6 +14,15 @@ from pydantic import BaseModel, Field
 import uuid
 
 
+class TradeAction(str, Enum):
+    """Types of trades that can be copied."""
+
+    SWAP = "swap"
+    BRIDGE = "bridge"
+    LP_ADD = "lp_add"
+    LP_REMOVE = "lp_remove"
+
+
 class SizingMode(str, Enum):
     """Position sizing modes for copy trading."""
 
@@ -26,12 +35,14 @@ class CopyExecutionStatus(str, Enum):
     """Status of a copy trade execution."""
 
     PENDING = "pending"  # Waiting to execute
+    PENDING_APPROVAL = "pending_approval"  # Waiting for user approval
     QUEUED = "queued"  # In execution queue
     EXECUTING = "executing"  # Currently executing
     COMPLETED = "completed"  # Successfully executed
     FAILED = "failed"  # Execution failed
     SKIPPED = "skipped"  # Skipped due to filters/limits
     CANCELLED = "cancelled"  # Manually cancelled
+    EXPIRED = "expired"  # Approval window expired
 
 
 class SkipReason(str, Enum):
@@ -99,9 +110,10 @@ class CopyConfig(BaseModel):
 
         return True
 
-    def is_action_allowed(self, action: str) -> bool:
+    def is_action_allowed(self, action: "TradeAction | str") -> bool:
         """Check if an action type is allowed."""
-        return action.lower() in [a.lower() for a in self.allowed_actions]
+        action_str = action.value if isinstance(action, TradeAction) else action
+        return action_str.lower() in [a.lower() for a in self.allowed_actions]
 
 
 class CopyRelationship(BaseModel):
@@ -199,14 +211,14 @@ class TradeSignal(BaseModel):
 
     # Transaction info
     tx_hash: str
-    block_number: int
+    block_number: Optional[int] = None
     timestamp: datetime
 
     # Trade details
-    action: str  # "swap", "bridge", etc.
+    action: TradeAction = TradeAction.SWAP
     token_in_address: str
     token_in_symbol: Optional[str] = None
-    token_in_amount: Decimal
+    token_in_amount: Optional[Decimal] = None
     token_out_address: str
     token_out_symbol: Optional[str] = None
     token_out_amount: Optional[Decimal] = None
@@ -216,6 +228,7 @@ class TradeSignal(BaseModel):
 
     # Metadata
     dex: Optional[str] = None  # "uniswap_v3", "jupiter", etc.
+    dex_name: Optional[str] = None  # Alias for dex
     raw_data: Optional[Dict[str, Any]] = None
 
 

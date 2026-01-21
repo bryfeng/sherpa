@@ -61,6 +61,11 @@ class LimitExceededError(SessionKeyError):
     pass
 
 
+class PolicyRequiredError(SessionKeyError):
+    """Risk policy required before creating a session key."""
+    pass
+
+
 class SessionKeyManager:
     """
     Manages session keys for autonomous agent wallet access.
@@ -109,6 +114,15 @@ class SessionKeyManager:
         Returns:
             The created SessionKey
         """
+        policy = await self.convex.query(
+            "riskPolicies:getByWallet",
+            {"walletAddress": wallet_address.lower()},
+        )
+        if not policy or not policy.get("config"):
+            raise PolicyRequiredError(
+                "Risk policy required before creating a session key. Draft a policy to enable autonomous execution."
+            )
+
         session = SessionKey(
             session_id=SessionKey.generate_session_id(),
             wallet_address=wallet_address.lower(),

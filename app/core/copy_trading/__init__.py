@@ -12,6 +12,8 @@ from .models import (
     SizingMode,
     LeaderProfile,
     TradeSignal,
+    TradeAction,
+    SkipReason,
 )
 from .sizing import (
     SizingStrategy,
@@ -39,6 +41,8 @@ __all__ = [
     "SizingMode",
     "LeaderProfile",
     "TradeSignal",
+    "TradeAction",
+    "SkipReason",
     # Sizing
     "SizingStrategy",
     "PercentageSizing",

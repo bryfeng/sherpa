@@ -10,11 +10,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from .manager import CopyTradingManager
-from .models import TradeSignal
-from ..wallet.models import SessionKey
+from .models import TradeSignal, TradeAction
+
+if TYPE_CHECKING:
+    from ...services.events.models import WalletActivity, ParsedTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -115,49 +117,92 @@ class CopyTradingEventBridge:
             f"{activity.direction} {activity.value_usd} USD"
         )
 
-    def _activity_to_signal(self, activity: Any) -> Optional[TradeSignal]:
+    def _activity_to_signal(self, activity: "WalletActivity") -> Optional[TradeSignal]:
         """Convert a WalletActivity to a TradeSignal."""
         try:
-            # Extract swap details from parsed transaction
             parsed_tx = activity.parsed_tx
             if not parsed_tx:
                 return None
 
-            # Get swap details
-            swap = parsed_tx.get("swap") or parsed_tx.get("swapDetails")
-            if not swap:
-                # Try to infer from token transfers
+            # Extract swap details from parsed transaction actions
+            swap_details = None
+            token_in_address = ""
+            token_in_symbol = ""
+            token_out_address = ""
+            token_out_symbol = ""
+            token_in_amount: Optional[Decimal] = None
+            token_out_amount: Optional[Decimal] = None
+            dex_name = None
+
+            # Look for swap action in parsed transaction
+            if parsed_tx.actions:
+                for action in parsed_tx.actions:
+                    if action.swap:
+                        swap_details = action.swap
+                        break
+
+            if swap_details:
+                # Extract from swap details
+                token_in_address = swap_details.token_in.token_address
+                token_in_symbol = swap_details.token_in.token_symbol or "UNKNOWN"
+                token_out_address = swap_details.token_out.token_address
+                token_out_symbol = swap_details.token_out.token_symbol or "UNKNOWN"
+                token_in_amount = swap_details.token_in.amount
+                token_out_amount = swap_details.token_out.amount
+                dex_name = swap_details.dex_name
+
+            # Fallback to token transfers if no swap details
+            elif parsed_tx.token_transfers and len(parsed_tx.token_transfers) >= 2:
+                transfers = parsed_tx.token_transfers
+                # First transfer is usually input, last is output
+                token_in = transfers[0]
+                token_out = transfers[-1]
+                token_in_address = token_in.token_address
+                token_in_symbol = token_in.token_symbol or "UNKNOWN"
+                token_out_address = token_out.token_address
+                token_out_symbol = token_out.token_symbol or "UNKNOWN"
+                token_in_amount = token_in.amount
+                token_out_amount = token_out.amount
+
+            # If we still don't have token info, try to infer from transfers
+            if not token_in_address or not token_out_address:
                 return self._infer_signal_from_transfers(activity)
+
+            # Handle timestamp - activity.timestamp is a datetime object
+            timestamp = activity.timestamp
+            if isinstance(timestamp, (int, float)):
+                timestamp = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
 
             return TradeSignal(
                 leader_address=activity.wallet_address,
                 leader_chain=self._activity_chain_to_string(activity.chain),
                 tx_hash=activity.tx_hash,
                 block_number=activity.block_number,
-                timestamp=datetime.fromtimestamp(activity.timestamp / 1000, tz=timezone.utc),
-                action="swap",
-                token_in_address=swap.get("tokenIn", {}).get("address", ""),
-                token_in_symbol=swap.get("tokenIn", {}).get("symbol"),
-                token_in_amount=Decimal(str(swap.get("amountIn", 0))),
-                token_out_address=swap.get("tokenOut", {}).get("address", ""),
-                token_out_symbol=swap.get("tokenOut", {}).get("symbol"),
-                token_out_amount=Decimal(str(swap.get("amountOut", 0))) if swap.get("amountOut") else None,
-                value_usd=Decimal(str(activity.value_usd)) if activity.value_usd else None,
-                dex=swap.get("dex") or activity.counterparty_label,
-                raw_data=parsed_tx,
+                timestamp=timestamp,
+                action=TradeAction.SWAP,
+                token_in_address=token_in_address,
+                token_in_symbol=token_in_symbol,
+                token_in_amount=token_in_amount,
+                token_out_address=token_out_address,
+                token_out_symbol=token_out_symbol,
+                token_out_amount=token_out_amount,
+                value_usd=activity.value_usd,
+                dex=dex_name or activity.counterparty_label,
+                dex_name=dex_name or activity.counterparty_label,
+                raw_data=parsed_tx.model_dump() if parsed_tx else None,
             )
 
         except Exception as e:
-            logger.error(f"Error converting activity to signal: {e}")
+            logger.error(f"Error converting activity to signal: {e}", exc_info=True)
             return None
 
-    def _infer_signal_from_transfers(self, activity: Any) -> Optional[TradeSignal]:
+    def _infer_signal_from_transfers(self, activity: "WalletActivity") -> Optional[TradeSignal]:
         """Infer a swap signal from token transfers."""
         parsed_tx = activity.parsed_tx
-        if not parsed_tx:
+        if not parsed_tx or not parsed_tx.token_transfers:
             return None
 
-        transfers = parsed_tx.get("transfers", [])
+        transfers = parsed_tx.token_transfers
         if len(transfers) < 2:
             return None
 
@@ -166,30 +211,35 @@ class CopyTradingEventBridge:
         token_out = None
 
         for transfer in transfers:
-            if transfer.get("from", "").lower() == activity.wallet_address.lower():
+            if transfer.from_address.lower() == activity.wallet_address.lower():
                 token_in = transfer
-            elif transfer.get("to", "").lower() == activity.wallet_address.lower():
+            elif transfer.to_address.lower() == activity.wallet_address.lower():
                 token_out = transfer
 
         if not token_in or not token_out:
             return None
+
+        # Handle timestamp
+        timestamp = activity.timestamp
+        if isinstance(timestamp, (int, float)):
+            timestamp = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
 
         return TradeSignal(
             leader_address=activity.wallet_address,
             leader_chain=self._activity_chain_to_string(activity.chain),
             tx_hash=activity.tx_hash,
             block_number=activity.block_number,
-            timestamp=datetime.fromtimestamp(activity.timestamp / 1000, tz=timezone.utc),
-            action="swap",
-            token_in_address=token_in.get("tokenAddress", ""),
-            token_in_symbol=token_in.get("symbol"),
-            token_in_amount=Decimal(str(token_in.get("amount", 0))),
-            token_out_address=token_out.get("tokenAddress", ""),
-            token_out_symbol=token_out.get("symbol"),
-            token_out_amount=Decimal(str(token_out.get("amount", 0))) if token_out.get("amount") else None,
-            value_usd=Decimal(str(activity.value_usd)) if activity.value_usd else None,
+            timestamp=timestamp,
+            action=TradeAction.SWAP,
+            token_in_address=token_in.token_address,
+            token_in_symbol=token_in.token_symbol,
+            token_in_amount=token_in.amount,
+            token_out_address=token_out.token_address,
+            token_out_symbol=token_out.token_symbol,
+            token_out_amount=token_out.amount,
+            value_usd=activity.value_usd,
             dex=activity.counterparty_label,
-            raw_data=parsed_tx,
+            raw_data=parsed_tx.model_dump() if parsed_tx else None,
         )
 
     def _activity_chain_to_string(self, chain: Any) -> str:
@@ -213,7 +263,10 @@ def get_copy_trading_bridge() -> CopyTradingEventBridge:
         from ...services.events.service import get_event_monitoring_service
 
         convex = get_convex_client()
-        executor = CopyExecutor()
+
+        # Create executor with real providers (Jupiter + Relay)
+        executor = CopyExecutor.create_with_providers()
+
         manager = CopyTradingManager(
             convex_client=convex,
             executor=executor,

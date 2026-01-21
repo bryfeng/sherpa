@@ -831,6 +831,788 @@ class ToolRegistry:
             self._handle_update_strategy,
         )
 
+        # =====================================================================
+        # Solana Swap Tools
+        # =====================================================================
+
+        self.register(
+            "get_solana_swap_quote",
+            ToolDefinition(
+                name="get_solana_swap_quote",
+                description=(
+                    "Get a swap quote for exchanging tokens WITHIN Solana using Jupiter DEX. "
+                    "This is for Solana-to-Solana token swaps only (e.g., SOL to USDC, BONK to JUP). "
+                    "Returns the expected output amount, price impact, and a transaction ready for signing. "
+                    "NOTE: For cross-chain transfers TO or FROM Solana, use get_bridge_quote instead."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="wallet_address",
+                        type=ToolParameterType.STRING,
+                        description="The Solana wallet address (public key) performing the swap",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="input_token",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "The input token symbol or mint address "
+                            "(e.g., 'SOL', 'USDC', or full mint address)"
+                        ),
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="output_token",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "The output token symbol or mint address "
+                            "(e.g., 'SOL', 'USDC', or full mint address)"
+                        ),
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="amount",
+                        type=ToolParameterType.NUMBER,
+                        description="Amount of input token to swap (in human-readable units, not lamports)",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="slippage_bps",
+                        type=ToolParameterType.INTEGER,
+                        description="Slippage tolerance in basis points (50 = 0.5%, default)",
+                        required=False,
+                        default=50,
+                    ),
+                ],
+            ),
+            self._handle_get_solana_swap_quote,
+            requires_address=True,
+        )
+
+        # =====================================================================
+        # EVM Swap Tools (via Relay)
+        # =====================================================================
+
+        self.register(
+            "get_swap_quote",
+            ToolDefinition(
+                name="get_swap_quote",
+                description=(
+                    "Get a swap quote for exchanging tokens on EVM chains (Ethereum, Base, Arbitrum, "
+                    "Optimism, Polygon, etc.) using Relay. This is for same-chain swaps only. "
+                    "Returns the expected output amount, fees, and a transaction ready for signing. "
+                    "Supports all major EVM tokens including ETH, USDC, USDT, WBTC, and many others. "
+                    "NOTE: For Solana swaps, use get_solana_swap_quote. For cross-chain transfers, use get_bridge_quote."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="wallet_address",
+                        type=ToolParameterType.STRING,
+                        description="The EVM wallet address (0x...) performing the swap",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="input_token",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "The input token symbol or contract address "
+                            "(e.g., 'ETH', 'USDC', 'WBTC', or '0x...')"
+                        ),
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="output_token",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "The output token symbol or contract address "
+                            "(e.g., 'ETH', 'USDC', 'WBTC', or '0x...')"
+                        ),
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="amount",
+                        type=ToolParameterType.NUMBER,
+                        description="Amount of input token to swap (in human-readable units)",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="chain",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "The blockchain to swap on (e.g., 'ethereum', 'base', 'arbitrum', "
+                            "'optimism', 'polygon'). Defaults to 'ethereum'."
+                        ),
+                        required=False,
+                        default="ethereum",
+                    ),
+                    ToolParameter(
+                        name="slippage_percent",
+                        type=ToolParameterType.NUMBER,
+                        description="Slippage tolerance as a percentage (e.g., 0.5 for 0.5%). Defaults to 0.5%.",
+                        required=False,
+                        default=0.5,
+                    ),
+                ],
+            ),
+            self._handle_get_swap_quote,
+            requires_address=True,
+        )
+
+        # =====================================================================
+        # Cross-Chain Bridge Tools (via Relay)
+        # =====================================================================
+
+        self.register(
+            "get_bridge_quote",
+            ToolDefinition(
+                name="get_bridge_quote",
+                description=(
+                    "Get a quote for bridging/transferring tokens between different blockchains using Relay. "
+                    "Supports transfers between EVM chains (Ethereum, Base, Arbitrum, Optimism, Polygon, etc.) "
+                    "AND to/from Solana. Use this for cross-chain transfers like: "
+                    "ETH on Ethereum → ETH on Base, USDC on Arbitrum → USDC on Solana, etc. "
+                    "Returns the expected output amount, fees, and transaction(s) ready for signing. "
+                    "NOTE: For same-chain swaps, use get_swap_quote (EVM) or get_solana_swap_quote (Solana)."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="wallet_address",
+                        type=ToolParameterType.STRING,
+                        description="The wallet address performing the bridge (0x... for EVM, base58 for Solana)",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="from_chain",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "The source blockchain (e.g., 'ethereum', 'base', 'arbitrum', "
+                            "'optimism', 'polygon', 'solana')"
+                        ),
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="to_chain",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "The destination blockchain (e.g., 'ethereum', 'base', 'arbitrum', "
+                            "'optimism', 'polygon', 'solana')"
+                        ),
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="token",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "The token to bridge (e.g., 'ETH', 'USDC', 'USDT'). "
+                            "The same token type will be received on the destination chain."
+                        ),
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="amount",
+                        type=ToolParameterType.NUMBER,
+                        description="Amount of token to bridge (in human-readable units)",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="destination_address",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "Optional: Recipient address on the destination chain. "
+                            "If not provided, tokens are sent to the same address (if compatible) "
+                            "or the user must specify for cross-ecosystem bridges (EVM ↔ Solana)."
+                        ),
+                        required=False,
+                    ),
+                ],
+            ),
+            self._handle_get_bridge_quote,
+            requires_address=True,
+        )
+
+        # =====================================================================
+        # Copy Trading Tools
+        # =====================================================================
+
+        self.register(
+            "get_top_traders",
+            ToolDefinition(
+                name="get_top_traders",
+                description=(
+                    "Discover top-performing traders for a specific token using Birdeye analytics. "
+                    "Returns a list of wallet addresses ranked by PnL, win rate, or volume. "
+                    "Use this when the user wants to find successful traders to copy, "
+                    "asks 'who are the best traders for X token', or wants wallet recommendations."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="token_address",
+                        type=ToolParameterType.STRING,
+                        description="The token mint address to find top traders for",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="chain",
+                        type=ToolParameterType.STRING,
+                        description="Blockchain (default: solana)",
+                        required=False,
+                        default="solana",
+                    ),
+                    ToolParameter(
+                        name="time_frame",
+                        type=ToolParameterType.STRING,
+                        description="Time frame for rankings (24h, 7d, 30d)",
+                        required=False,
+                        default="7d",
+                        enum=["24h", "7d", "30d"],
+                    ),
+                    ToolParameter(
+                        name="sort_by",
+                        type=ToolParameterType.STRING,
+                        description="Sort criteria (pnl, volume, trades, win_rate)",
+                        required=False,
+                        default="pnl",
+                        enum=["pnl", "volume", "trades"],
+                    ),
+                    ToolParameter(
+                        name="limit",
+                        type=ToolParameterType.INTEGER,
+                        description="Number of traders to return (max 20)",
+                        required=False,
+                        default=10,
+                    ),
+                ],
+            ),
+            self._handle_get_top_traders,
+        )
+
+        self.register(
+            "get_trader_profile",
+            ToolDefinition(
+                name="get_trader_profile",
+                description=(
+                    "Get detailed analytics for a specific trader wallet including "
+                    "portfolio, PnL, trade history, and performance metrics. "
+                    "Use this when the user wants to analyze a wallet before copying it, "
+                    "or asks about a specific trader's performance."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="wallet_address",
+                        type=ToolParameterType.STRING,
+                        description="The trader's wallet address to analyze",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="chain",
+                        type=ToolParameterType.STRING,
+                        description="Blockchain (default: solana)",
+                        required=False,
+                        default="solana",
+                    ),
+                ],
+            ),
+            self._handle_get_trader_profile,
+        )
+
+        self.register(
+            "start_copy_trading",
+            ToolDefinition(
+                name="start_copy_trading",
+                description=(
+                    "Start copying trades from a leader wallet. When the leader makes a swap, "
+                    "you'll receive a notification to approve the copy trade. "
+                    "Use this when the user says 'copy this wallet', 'follow this trader', "
+                    "or wants to mirror someone's trades."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="leader_address",
+                        type=ToolParameterType.STRING,
+                        description="The wallet address to copy trades from",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="leader_chain",
+                        type=ToolParameterType.STRING,
+                        description="The leader's blockchain (e.g., 'solana', 'ethereum')",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="follower_address",
+                        type=ToolParameterType.STRING,
+                        description="Your wallet address that will execute copy trades",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="follower_chain",
+                        type=ToolParameterType.STRING,
+                        description="Your wallet's blockchain",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="sizing_mode",
+                        type=ToolParameterType.STRING,
+                        description="How to size copy trades: 'fixed' (fixed USD), 'percentage' (% of portfolio), 'proportional' (match leader's %)",
+                        required=False,
+                        default="fixed",
+                        enum=["fixed", "percentage", "proportional"],
+                    ),
+                    ToolParameter(
+                        name="size_value",
+                        type=ToolParameterType.NUMBER,
+                        description="Size value: USD amount for 'fixed', percentage for 'percentage' (e.g., 5 = 5%)",
+                        required=False,
+                        default=100,
+                    ),
+                    ToolParameter(
+                        name="max_trade_usd",
+                        type=ToolParameterType.NUMBER,
+                        description="Maximum USD per copy trade (safety limit)",
+                        required=False,
+                        default=1000,
+                    ),
+                ],
+            ),
+            self._handle_start_copy_trading,
+            requires_address=True,
+        )
+
+        self.register(
+            "stop_copy_trading",
+            ToolDefinition(
+                name="stop_copy_trading",
+                description=(
+                    "Stop copying trades from a leader wallet. "
+                    "Use this when the user wants to unfollow a trader or stop copying."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="relationship_id",
+                        type=ToolParameterType.STRING,
+                        description="The copy trading relationship ID to stop",
+                        required=True,
+                    ),
+                ],
+            ),
+            self._handle_stop_copy_trading,
+            requires_address=True,
+        )
+
+        self.register(
+            "list_copy_relationships",
+            ToolDefinition(
+                name="list_copy_relationships",
+                description=(
+                    "List all copy trading relationships for the user. "
+                    "Shows which wallets the user is currently following. "
+                    "Use this when the user asks 'who am I copying', 'show my copy trades', "
+                    "or wants to see their copy trading status."
+                ),
+                parameters=[],
+            ),
+            self._handle_list_copy_relationships,
+            requires_address=True,
+        )
+
+        self.register(
+            "get_pending_copy_trades",
+            ToolDefinition(
+                name="get_pending_copy_trades",
+                description=(
+                    "Get copy trades waiting for user approval. "
+                    "Returns trades that were detected from followed wallets but need manual approval. "
+                    "Use this when the user asks about pending trades or copy trade notifications."
+                ),
+                parameters=[],
+            ),
+            self._handle_get_pending_copy_trades,
+            requires_address=True,
+        )
+
+        self.register(
+            "approve_copy_trade",
+            ToolDefinition(
+                name="approve_copy_trade",
+                description=(
+                    "Approve and execute a pending copy trade. "
+                    "Use this when the user wants to proceed with a copy trade notification."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="execution_id",
+                        type=ToolParameterType.STRING,
+                        description="The execution ID to approve",
+                        required=True,
+                    ),
+                ],
+            ),
+            self._handle_approve_copy_trade,
+            requires_address=True,
+        )
+
+        self.register(
+            "reject_copy_trade",
+            ToolDefinition(
+                name="reject_copy_trade",
+                description=(
+                    "Reject/skip a pending copy trade. "
+                    "Use this when the user doesn't want to execute a specific copy trade."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="execution_id",
+                        type=ToolParameterType.STRING,
+                        description="The execution ID to reject",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="reason",
+                        type=ToolParameterType.STRING,
+                        description="Optional reason for rejection",
+                        required=False,
+                    ),
+                ],
+            ),
+            self._handle_reject_copy_trade,
+            requires_address=True,
+        )
+
+        # =====================================================================
+        # Polymarket Tools
+        # =====================================================================
+
+        self.register(
+            "get_polymarket_markets",
+            ToolDefinition(
+                name="get_polymarket_markets",
+                description=(
+                    "Get prediction markets from Polymarket. "
+                    "Can filter by category (politics, crypto, sports), search by query, "
+                    "get trending markets, or markets closing soon. "
+                    "Use this when the user wants to explore or discover prediction markets."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="category",
+                        type=ToolParameterType.STRING,
+                        description="Category filter: politics, crypto, sports, entertainment, science, economics",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="query",
+                        type=ToolParameterType.STRING,
+                        description="Search query to find markets by question text",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="trending",
+                        type=ToolParameterType.BOOLEAN,
+                        description="Get trending markets by volume (default: false)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="closing_soon_hours",
+                        type=ToolParameterType.INTEGER,
+                        description="Get markets closing within this many hours",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="limit",
+                        type=ToolParameterType.INTEGER,
+                        description="Max number of markets to return (default: 20)",
+                        required=False,
+                    ),
+                ],
+            ),
+            self._handle_get_polymarket_markets,
+        )
+
+        self.register(
+            "get_polymarket_market",
+            ToolDefinition(
+                name="get_polymarket_market",
+                description=(
+                    "Get detailed information about a specific Polymarket prediction market. "
+                    "Includes current prices, orderbook depth, and market metadata. "
+                    "Use this when the user wants to see details about a specific market."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="market_id",
+                        type=ToolParameterType.STRING,
+                        description="The market condition ID",
+                        required=True,
+                    ),
+                ],
+            ),
+            self._handle_get_polymarket_market,
+        )
+
+        self.register(
+            "get_polymarket_portfolio",
+            ToolDefinition(
+                name="get_polymarket_portfolio",
+                description=(
+                    "Get user's Polymarket portfolio with positions and P&L. "
+                    "Shows all open prediction market positions, cost basis, current value, and profit/loss."
+                ),
+                parameters=[],
+            ),
+            self._handle_get_polymarket_portfolio,
+            requires_address=True,
+        )
+
+        self.register(
+            "get_polymarket_quote",
+            ToolDefinition(
+                name="get_polymarket_quote",
+                description=(
+                    "Get a quote for buying or selling shares in a Polymarket prediction. "
+                    "Returns the number of shares, average price, and potential profit. "
+                    "Does NOT execute the trade - use this to show the user what they would get."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="market_id",
+                        type=ToolParameterType.STRING,
+                        description="The market condition ID",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="outcome",
+                        type=ToolParameterType.STRING,
+                        description="The outcome to trade (e.g., 'Yes', 'No')",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="side",
+                        type=ToolParameterType.STRING,
+                        description="BUY or SELL",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="amount_usd",
+                        type=ToolParameterType.NUMBER,
+                        description="Amount in USDC to spend (for BUY) or shares to sell (for SELL)",
+                        required=True,
+                    ),
+                ],
+            ),
+            self._handle_get_polymarket_quote,
+            requires_address=True,
+        )
+
+        self.register(
+            "analyze_polymarket",
+            ToolDefinition(
+                name="analyze_polymarket",
+                description=(
+                    "Get AI analysis of a Polymarket prediction market. "
+                    "Provides summary, key factors, sentiment, and potential recommendations. "
+                    "Use this when the user wants insights before making a prediction."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="market_id",
+                        type=ToolParameterType.STRING,
+                        description="The market condition ID to analyze",
+                        required=True,
+                    ),
+                ],
+            ),
+            self._handle_analyze_polymarket,
+        )
+
+        # =====================================================================
+        # Polymarket Copy Trading Tools
+        # =====================================================================
+
+        self.register(
+            "get_polymarket_top_traders",
+            ToolDefinition(
+                name="get_polymarket_top_traders",
+                description=(
+                    "Get top Polymarket traders by performance. "
+                    "Shows leaderboard of most profitable prediction market traders. "
+                    "Use this when the user wants to find traders to copy."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="sort_by",
+                        type=ToolParameterType.STRING,
+                        description="Metric to sort by: roi, pnl, win_rate, volume (default: roi)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="limit",
+                        type=ToolParameterType.INTEGER,
+                        description="Number of traders to return (default: 20)",
+                        required=False,
+                    ),
+                ],
+            ),
+            self._handle_get_polymarket_top_traders,
+        )
+
+        self.register(
+            "get_polymarket_trader_profile",
+            ToolDefinition(
+                name="get_polymarket_trader_profile",
+                description=(
+                    "Get detailed profile of a Polymarket trader. "
+                    "Shows performance metrics, positions, risk score, and trading style. "
+                    "Use this before deciding to copy a trader."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="address",
+                        type=ToolParameterType.STRING,
+                        description="Trader's wallet address",
+                        required=True,
+                    ),
+                ],
+            ),
+            self._handle_get_polymarket_trader_profile,
+        )
+
+        self.register(
+            "start_polymarket_copy",
+            ToolDefinition(
+                name="start_polymarket_copy",
+                description=(
+                    "Start copying a Polymarket trader. "
+                    "Creates a copy relationship with configurable sizing and filters. "
+                    "You'll be notified when the trader makes trades for approval."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="leader_address",
+                        type=ToolParameterType.STRING,
+                        description="Address of the trader to copy",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="sizing_mode",
+                        type=ToolParameterType.STRING,
+                        description="How to size positions: percentage, fixed, proportional (default: percentage)",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="size_value",
+                        type=ToolParameterType.NUMBER,
+                        description="Size value: percentage (e.g., 10 for 10%) or fixed USD amount",
+                        required=False,
+                    ),
+                    ToolParameter(
+                        name="max_exposure_usd",
+                        type=ToolParameterType.NUMBER,
+                        description="Maximum total exposure in USD (default: 1000)",
+                        required=False,
+                    ),
+                ],
+            ),
+            self._handle_start_polymarket_copy,
+            requires_address=True,
+        )
+
+        self.register(
+            "stop_polymarket_copy",
+            ToolDefinition(
+                name="stop_polymarket_copy",
+                description=(
+                    "Stop copying a Polymarket trader. "
+                    "Deactivates the copy relationship but keeps existing positions."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="relationship_id",
+                        type=ToolParameterType.STRING,
+                        description="The copy relationship ID to stop",
+                        required=True,
+                    ),
+                ],
+            ),
+            self._handle_stop_polymarket_copy,
+            requires_address=True,
+        )
+
+        self.register(
+            "list_polymarket_copy_relationships",
+            ToolDefinition(
+                name="list_polymarket_copy_relationships",
+                description=(
+                    "List all Polymarket traders the user is copying. "
+                    "Shows relationship status, stats, and current exposure."
+                ),
+                parameters=[],
+            ),
+            self._handle_list_polymarket_copy_relationships,
+            requires_address=True,
+        )
+
+        self.register(
+            "get_pending_polymarket_copies",
+            ToolDefinition(
+                name="get_pending_polymarket_copies",
+                description=(
+                    "Get pending Polymarket copy trades awaiting approval. "
+                    "Shows trades detected from leaders that need user action."
+                ),
+                parameters=[],
+            ),
+            self._handle_get_pending_polymarket_copies,
+            requires_address=True,
+        )
+
+        self.register(
+            "approve_polymarket_copy",
+            ToolDefinition(
+                name="approve_polymarket_copy",
+                description=(
+                    "Approve a pending Polymarket copy trade. "
+                    "Gets a quote and prepares the transaction for signing."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="execution_id",
+                        type=ToolParameterType.STRING,
+                        description="The execution ID to approve",
+                        required=True,
+                    ),
+                ],
+            ),
+            self._handle_approve_polymarket_copy,
+            requires_address=True,
+        )
+
+        self.register(
+            "reject_polymarket_copy",
+            ToolDefinition(
+                name="reject_polymarket_copy",
+                description=(
+                    "Reject a pending Polymarket copy trade. "
+                    "Skips this trade without executing."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="execution_id",
+                        type=ToolParameterType.STRING,
+                        description="The execution ID to reject",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="reason",
+                        type=ToolParameterType.STRING,
+                        description="Optional reason for rejection",
+                        required=False,
+                    ),
+                ],
+            ),
+            self._handle_reject_polymarket_copy,
+            requires_address=True,
+        )
+
     # =========================================================================
     # Tool Handlers
     # =========================================================================
@@ -1229,8 +2011,6 @@ class ToolRegistry:
     ) -> Dict[str, Any]:
         """Handle getting risk policy for a wallet."""
         from ...db import get_convex_client
-        from ..policy.models import RiskPolicyConfig
-
         try:
             convex = get_convex_client()
 
@@ -1263,14 +2043,13 @@ class ToolRegistry:
                     "is_default": False,
                 }
             else:
-                # Return default policy
-                default_config = RiskPolicyConfig()
                 return {
                     "success": True,
                     "wallet_address": wallet_address,
-                    "policy": default_config.to_dict(),
-                    "is_default": True,
-                    "message": "No custom policy found, using defaults",
+                    "policy": None,
+                    "is_default": False,
+                    "policy_missing": True,
+                    "message": "No risk policy configured. Draft a policy to enable autonomous execution.",
                 }
 
         except Exception as e:
@@ -1295,30 +2074,21 @@ class ToolRegistry:
         try:
             convex = get_convex_client()
 
-            # Get existing policy or defaults
+            # Get existing policy
             existing = await convex.query(
                 "riskPolicies:getByWallet",
                 {"walletAddress": wallet_address.lower()},
             )
 
-            # Build config with existing values as base
-            if existing and existing.get("config"):
-                config = existing["config"].copy()
-            else:
-                config = {
-                    "maxPositionPercent": 25.0,
-                    "maxPositionValueUsd": 10000,
-                    "maxDailyVolumeUsd": 50000,
-                    "maxDailyLossUsd": 1000,
-                    "maxSingleTxUsd": 5000,
-                    "requireApprovalAboveUsd": 2000,
-                    "maxSlippagePercent": 3.0,
-                    "warnSlippagePercent": 1.5,
-                    "maxGasPercent": 5.0,
-                    "warnGasPercent": 2.0,
-                    "minLiquidityUsd": 100000,
-                    "enabled": True,
+            if not existing or not existing.get("config"):
+                return {
+                    "success": False,
+                    "error": "Risk policy not configured. Create a full policy before updating.",
+                    "policy_missing": True,
                 }
+
+            # Build config with existing values as base
+            config = existing["config"].copy()
 
             # Apply updates
             updates_made = []
@@ -1393,11 +2163,24 @@ class ToolRegistry:
                 {"walletAddress": wallet_address.lower()},
             )
 
-            risk_config = None
             if risk_policy_data and risk_policy_data.get("config"):
                 risk_config = RiskPolicyConfig.from_dict(risk_policy_data["config"])
             else:
-                risk_config = RiskPolicyConfig()
+                return {
+                    "success": True,
+                    "approved": False,
+                    "policy_missing": True,
+                    "requires_approval": False,
+                    "violations": [
+                        {
+                            "policyType": "risk",
+                            "policyName": "risk_policy_missing",
+                            "severity": "block",
+                            "message": "No risk policy configured. Draft a policy to enable autonomous execution.",
+                        }
+                    ],
+                    "warnings": [],
+                }
 
             # Fetch system policy
             system_policy_data = await convex.query("systemPolicy:get", {})
@@ -1979,6 +2762,1557 @@ class ToolRegistry:
 
         except Exception as e:
             self.logger.error(f"Error updating strategy: {e}")
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # Solana Swap Handlers
+    # =========================================================================
+
+    async def _handle_get_solana_swap_quote(
+        self,
+        wallet_address: str,
+        input_token: str,
+        output_token: str,
+        amount: float,
+        slippage_bps: int = 50,
+    ) -> Dict[str, Any]:
+        """Handle Solana swap quote request via Jupiter."""
+        from decimal import Decimal
+        from ...providers.jupiter import (
+            get_jupiter_swap_provider,
+            JupiterQuoteError,
+            JupiterSwapError,
+            NATIVE_SOL_MINT,
+            USDC_MINT,
+            USDT_MINT,
+        )
+        from ..swap.constants import TOKEN_REGISTRY, SOLANA_CHAIN_ID
+
+        try:
+            jupiter = get_jupiter_swap_provider()
+
+            # Resolve token symbols to mint addresses
+            solana_tokens = TOKEN_REGISTRY.get(SOLANA_CHAIN_ID, {})
+
+            def resolve_mint(token: str) -> str:
+                """Resolve symbol to mint address or return as-is if already an address."""
+                upper = token.upper()
+                if upper in solana_tokens:
+                    return str(solana_tokens[upper]['address'])
+                # Check if it looks like a Solana address (32-44 chars, base58)
+                if len(token) >= 32 and len(token) <= 44:
+                    return token
+                # Common aliases
+                if upper in ('SOL', 'SOLANA'):
+                    return NATIVE_SOL_MINT
+                if upper == 'USDC':
+                    return USDC_MINT
+                if upper == 'USDT':
+                    return USDT_MINT
+                # Return as-is, let Jupiter handle the error
+                return token
+
+            input_mint = resolve_mint(input_token)
+            output_mint = resolve_mint(output_token)
+
+            # Get input token decimals
+            input_decimals = 9  # default SOL decimals
+            for symbol, meta in solana_tokens.items():
+                if str(meta.get('address')) == input_mint:
+                    input_decimals = int(meta.get('decimals', 9))
+                    break
+
+            # Convert amount to smallest units
+            amount_decimal = Decimal(str(amount))
+            amount_lamports = int(amount_decimal * (Decimal(10) ** input_decimals))
+
+            if amount_lamports <= 0:
+                return {
+                    "success": False,
+                    "error": "Amount must be greater than 0",
+                }
+
+            # Get quote from Jupiter
+            quote = await jupiter.get_swap_quote(
+                input_mint=input_mint,
+                output_mint=output_mint,
+                amount=amount_lamports,
+                slippage_bps=slippage_bps,
+            )
+
+            # Build swap transaction
+            swap_result = await jupiter.build_swap_transaction(
+                quote=quote,
+                user_public_key=wallet_address,
+            )
+
+            # Get output token decimals
+            output_decimals = 9
+            for symbol, meta in solana_tokens.items():
+                if str(meta.get('address')) == output_mint:
+                    output_decimals = int(meta.get('decimals', 9))
+                    break
+
+            # Calculate human-readable amounts
+            output_amount = Decimal(str(quote.out_amount)) / (Decimal(10) ** output_decimals)
+            min_output_amount = Decimal(str(quote.other_amount_threshold)) / (Decimal(10) ** output_decimals)
+
+            # Get token symbols
+            input_symbol = input_token.upper()
+            output_symbol = output_token.upper()
+            if quote.input_token:
+                input_symbol = quote.input_token.symbol
+            if quote.output_token:
+                output_symbol = quote.output_token.symbol
+
+            return {
+                "success": True,
+                "chain": "solana",
+                "provider": "jupiter",
+                "input_token": {
+                    "symbol": input_symbol,
+                    "mint": input_mint,
+                    "amount": str(amount),
+                    "amount_lamports": amount_lamports,
+                },
+                "output_token": {
+                    "symbol": output_symbol,
+                    "mint": output_mint,
+                    "amount_estimate": str(output_amount),
+                    "min_amount": str(min_output_amount),
+                },
+                "price_impact_percent": quote.price_impact_pct,
+                "slippage_bps": slippage_bps,
+                "transaction": {
+                    "swap_transaction_base64": swap_result.swap_transaction,
+                    "last_valid_block_height": swap_result.last_valid_block_height,
+                    "priority_fee_lamports": swap_result.priority_fee_lamports,
+                    "compute_unit_limit": swap_result.compute_unit_limit,
+                },
+                "instructions": [
+                    f"Swap {amount} {input_symbol} for ~{output_amount:.6f} {output_symbol} on Solana",
+                    f"Minimum output: {min_output_amount:.6f} {output_symbol} (with {slippage_bps/100}% slippage)",
+                    "Sign the transaction in your Solana wallet to execute the swap.",
+                ],
+            }
+
+        except JupiterQuoteError as e:
+            self.logger.warning(f"Jupiter quote error: {e}")
+            return {
+                "success": False,
+                "error": f"Could not get swap quote: {e}",
+                "hint": "Check that the token symbols are valid and you have sufficient balance.",
+            }
+        except JupiterSwapError as e:
+            self.logger.warning(f"Jupiter swap build error: {e}")
+            return {
+                "success": False,
+                "error": f"Could not build swap transaction: {e}",
+            }
+        except Exception as e:
+            self.logger.error(f"Error in Solana swap quote: {e}")
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # EVM Swap Handlers (via Relay)
+    # =========================================================================
+
+    async def _handle_get_swap_quote(
+        self,
+        wallet_address: str,
+        input_token: str,
+        output_token: str,
+        amount: float,
+        chain: str = "ethereum",
+        slippage_percent: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Handle EVM swap quote request via Relay."""
+        from decimal import Decimal
+        from ...providers.relay import RelayProvider
+        from ..bridge.chain_registry import get_chain_registry
+        from ..swap.constants import TOKEN_REGISTRY, TOKEN_ALIAS_MAP
+
+        try:
+            # Resolve chain name to chain ID
+            registry = await get_chain_registry()
+            chain_id = registry.get_chain_id(chain.lower())
+            if chain_id is None:
+                return {
+                    "success": False,
+                    "error": f"Unknown chain: {chain}",
+                    "hint": f"Supported chains include: ethereum, base, arbitrum, optimism, polygon",
+                }
+
+            # For Solana, redirect to the Solana swap tool
+            if isinstance(chain_id, str) and chain_id.lower() == "solana":
+                return {
+                    "success": False,
+                    "error": "For Solana swaps, use get_solana_swap_quote instead",
+                    "hint": "This tool is for EVM chains only. Use get_solana_swap_quote for Solana-to-Solana swaps.",
+                }
+
+            # Resolve token symbols to addresses
+            def resolve_token(token: str, chain_id: int) -> Optional[Dict[str, Any]]:
+                """Resolve token symbol to metadata."""
+                chain_tokens = TOKEN_REGISTRY.get(chain_id, {})
+                alias_map = TOKEN_ALIAS_MAP.get(chain_id, {})
+
+                # Check if it's already an address
+                if token.startswith("0x") and len(token) == 42:
+                    # Look up by address
+                    for sym, meta in chain_tokens.items():
+                        if str(meta.get("address", "")).lower() == token.lower():
+                            return {"symbol": sym, **meta}
+                    # Return as-is if not found in registry
+                    return {"symbol": token[:8], "address": token, "decimals": 18, "is_native": False}
+
+                # Resolve alias to symbol
+                symbol = alias_map.get(token.lower(), token.upper())
+                if symbol in chain_tokens:
+                    return {"symbol": symbol, **chain_tokens[symbol]}
+
+                # Common native token handling
+                if token.lower() in ("eth", "ether", "native"):
+                    return {
+                        "symbol": "ETH",
+                        "address": "0x0000000000000000000000000000000000000000",
+                        "decimals": 18,
+                        "is_native": True,
+                    }
+
+                return None
+
+            input_meta = resolve_token(input_token, chain_id)
+            output_meta = resolve_token(output_token, chain_id)
+
+            if not input_meta:
+                return {
+                    "success": False,
+                    "error": f"Unknown input token: {input_token}",
+                    "hint": f"Try using the full contract address or a common symbol like ETH, USDC, USDT",
+                }
+
+            if not output_meta:
+                return {
+                    "success": False,
+                    "error": f"Unknown output token: {output_token}",
+                    "hint": f"Try using the full contract address or a common symbol like ETH, USDC, USDT",
+                }
+
+            # Convert amount to base units
+            amount_decimal = Decimal(str(amount))
+            decimals = int(input_meta.get("decimals", 18))
+            amount_base_units = int(amount_decimal * (Decimal(10) ** decimals))
+
+            if amount_base_units <= 0:
+                return {
+                    "success": False,
+                    "error": "Amount must be greater than 0",
+                }
+
+            # Build Relay quote request
+            relay = RelayProvider()
+            relay_payload = {
+                "user": wallet_address,
+                "originChainId": chain_id,
+                "destinationChainId": chain_id,  # Same chain for swap
+                "originCurrency": input_meta["address"],
+                "destinationCurrency": output_meta["address"],
+                "recipient": wallet_address,
+                "tradeType": "EXACT_INPUT",
+                "amount": str(amount_base_units),
+                "referrer": "sherpa.chat",
+                "useExternalLiquidity": True,
+            }
+
+            quote = await relay.quote(relay_payload)
+
+            # Parse quote response
+            details = quote.get("details", {})
+            output_decimals = int(output_meta.get("decimals", 18))
+
+            # Get output amount
+            currency_out = details.get("currencyOut", {})
+            output_amount_raw = currency_out.get("amount", "0")
+            output_amount = Decimal(output_amount_raw) / (Decimal(10) ** output_decimals)
+
+            # Get fees
+            total_fee_usd = Decimal(str(details.get("totalFeeUsd", "0")))
+
+            # Get steps/transactions
+            steps = quote.get("steps", [])
+
+            chain_name = registry.get_chain_name(chain_id)
+
+            return {
+                "success": True,
+                "provider": "relay",
+                "chain": chain_name,
+                "chain_id": chain_id,
+                "input_token": {
+                    "symbol": input_meta["symbol"],
+                    "address": input_meta["address"],
+                    "amount": str(amount),
+                    "amount_base_units": str(amount_base_units),
+                },
+                "output_token": {
+                    "symbol": output_meta["symbol"],
+                    "address": output_meta["address"],
+                    "amount_estimate": str(output_amount),
+                },
+                "fees": {
+                    "total_usd": str(total_fee_usd),
+                    "slippage_percent": slippage_percent,
+                },
+                "steps_count": len(steps),
+                "quote_data": quote,  # Full quote for execution
+                "instructions": [
+                    f"Swap {amount} {input_meta['symbol']} for ~{output_amount:.6f} {output_meta['symbol']} on {chain_name}",
+                    f"Estimated fees: ${total_fee_usd:.2f}",
+                    "Review and sign the transaction in your wallet to execute the swap.",
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error in EVM swap quote: {e}")
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # Cross-Chain Bridge Handlers (via Relay)
+    # =========================================================================
+
+    async def _handle_get_bridge_quote(
+        self,
+        wallet_address: str,
+        from_chain: str,
+        to_chain: str,
+        token: str,
+        amount: float,
+        destination_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Handle cross-chain bridge quote request via Relay."""
+        from decimal import Decimal
+        from ...providers.relay import RelayProvider
+        from ..bridge.chain_registry import get_chain_registry
+        from ..swap.constants import TOKEN_REGISTRY, NATIVE_SOL_MINT
+
+        try:
+            # Resolve chain names to chain IDs
+            registry = await get_chain_registry()
+
+            from_chain_id = registry.get_chain_id(from_chain.lower())
+            to_chain_id = registry.get_chain_id(to_chain.lower())
+
+            if from_chain_id is None:
+                supported = registry.get_supported_chain_names(10)
+                return {
+                    "success": False,
+                    "error": f"Unknown source chain: {from_chain}",
+                    "hint": f"Supported chains include: {', '.join(supported)}",
+                }
+
+            if to_chain_id is None:
+                supported = registry.get_supported_chain_names(10)
+                return {
+                    "success": False,
+                    "error": f"Unknown destination chain: {to_chain}",
+                    "hint": f"Supported chains include: {', '.join(supported)}",
+                }
+
+            # Same chain = not a bridge
+            if from_chain_id == to_chain_id:
+                return {
+                    "success": False,
+                    "error": "Source and destination chains are the same",
+                    "hint": "For same-chain swaps, use get_swap_quote (EVM) or get_solana_swap_quote (Solana)",
+                }
+
+            # Determine if either chain is Solana
+            from_is_solana = isinstance(from_chain_id, str) and from_chain_id.lower() == "solana"
+            to_is_solana = isinstance(to_chain_id, str) and to_chain_id.lower() == "solana"
+
+            # For cross-ecosystem bridges (EVM ↔ Solana), destination address is required
+            if (from_is_solana or to_is_solana) and not destination_address:
+                if from_is_solana and not to_is_solana:
+                    return {
+                        "success": False,
+                        "error": "Destination EVM address required for Solana → EVM bridge",
+                        "hint": "Please provide the destination_address parameter with the EVM wallet address (0x...)",
+                    }
+                elif to_is_solana and not from_is_solana:
+                    return {
+                        "success": False,
+                        "error": "Destination Solana address required for EVM → Solana bridge",
+                        "hint": "Please provide the destination_address parameter with the Solana wallet address",
+                    }
+
+            recipient = destination_address or wallet_address
+
+            # Resolve token to address on source chain
+            def get_token_address(token: str, chain_id, is_solana: bool) -> tuple:
+                """Get token address and decimals for a chain."""
+                token_lower = token.lower()
+
+                if is_solana:
+                    # Solana token addresses
+                    solana_tokens = {
+                        "sol": (NATIVE_SOL_MINT, 9),
+                        "usdc": ("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", 6),
+                        "usdt": ("Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", 6),
+                    }
+                    if token_lower in solana_tokens:
+                        return solana_tokens[token_lower]
+                    # Assume it's already an address
+                    return (token, 9)
+                else:
+                    # EVM token addresses
+                    chain_tokens = TOKEN_REGISTRY.get(chain_id, {})
+                    for sym, meta in chain_tokens.items():
+                        if sym.lower() == token_lower or token_lower in [a.lower() for a in meta.get("aliases", [])]:
+                            return (meta["address"], meta["decimals"])
+
+                    # Native ETH
+                    if token_lower in ("eth", "ether", "native"):
+                        return ("0x0000000000000000000000000000000000000000", 18)
+
+                    # Assume it's already an address
+                    return (token, 18)
+
+            from_address, from_decimals = get_token_address(token, from_chain_id, from_is_solana)
+
+            # Convert amount to base units
+            amount_decimal = Decimal(str(amount))
+            amount_base_units = int(amount_decimal * (Decimal(10) ** from_decimals))
+
+            if amount_base_units <= 0:
+                return {
+                    "success": False,
+                    "error": "Amount must be greater than 0",
+                }
+
+            # Build Relay quote request
+            relay = RelayProvider()
+            relay_payload = {
+                "user": wallet_address,
+                "originChainId": from_chain_id if not from_is_solana else 792703809,  # Relay's Solana chain ID
+                "destinationChainId": to_chain_id if not to_is_solana else 792703809,
+                "originCurrency": from_address,
+                "recipient": recipient,
+                "tradeType": "EXACT_INPUT",
+                "amount": str(amount_base_units),
+                "referrer": "sherpa.chat",
+            }
+
+            quote = await relay.quote(relay_payload)
+
+            # Parse quote response
+            details = quote.get("details", {})
+
+            # Get output amount
+            currency_out = details.get("currencyOut", {})
+            output_amount_raw = currency_out.get("amount", "0")
+            to_decimals = currency_out.get("decimals", from_decimals)
+            output_amount = Decimal(output_amount_raw) / (Decimal(10) ** to_decimals)
+
+            # Get fees
+            total_fee_usd = Decimal(str(details.get("totalFeeUsd", "0")))
+
+            # Get time estimate
+            time_estimate = details.get("timeEstimate", 0)  # seconds
+
+            # Get steps/transactions
+            steps = quote.get("steps", [])
+
+            from_chain_name = registry.get_chain_name(from_chain_id) if not from_is_solana else "Solana"
+            to_chain_name = registry.get_chain_name(to_chain_id) if not to_is_solana else "Solana"
+
+            return {
+                "success": True,
+                "provider": "relay",
+                "bridge_type": "cross_chain",
+                "from_chain": {
+                    "name": from_chain_name,
+                    "chain_id": from_chain_id,
+                    "is_solana": from_is_solana,
+                },
+                "to_chain": {
+                    "name": to_chain_name,
+                    "chain_id": to_chain_id,
+                    "is_solana": to_is_solana,
+                },
+                "token": {
+                    "symbol": token.upper(),
+                    "input_address": from_address,
+                    "amount": str(amount),
+                    "amount_base_units": str(amount_base_units),
+                },
+                "output": {
+                    "amount_estimate": str(output_amount),
+                    "recipient": recipient,
+                },
+                "fees": {
+                    "total_usd": str(total_fee_usd),
+                },
+                "time_estimate_seconds": time_estimate,
+                "steps_count": len(steps),
+                "quote_data": quote,  # Full quote for execution
+                "instructions": [
+                    f"Bridge {amount} {token.upper()} from {from_chain_name} to {to_chain_name}",
+                    f"Expected output: ~{output_amount:.6f} {token.upper()}",
+                    f"Estimated fees: ${total_fee_usd:.2f}",
+                    f"Estimated time: {time_estimate // 60} min {time_estimate % 60} sec" if time_estimate else "Time varies",
+                    "Review and sign the transaction(s) in your wallet to execute the bridge.",
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error in bridge quote: {e}")
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # Copy Trading Handlers
+    # =========================================================================
+
+    async def _handle_get_top_traders(
+        self,
+        token_address: str,
+        chain: str = "solana",
+        time_frame: str = "7d",
+        sort_by: str = "pnl",
+        limit: int = 10,
+    ) -> Dict[str, Any]:
+        """Get top traders for a token via Birdeye."""
+        try:
+            from ...providers.birdeye import get_birdeye_provider
+
+            birdeye = get_birdeye_provider()
+
+            if not await birdeye.ready():
+                return {
+                    "success": False,
+                    "error": "Birdeye API not configured. Please set BIRDEYE_API_KEY.",
+                }
+
+            result = await birdeye.get_top_traders_by_token(
+                token_address=token_address,
+                chain=chain,
+                time_frame=time_frame,
+                sort_by=sort_by,
+                limit=min(limit, 20),
+            )
+
+            if "error" in result and result.get("error"):
+                return {"success": False, "error": result["error"]}
+
+            traders = result.get("traders", [])
+
+            return {
+                "success": True,
+                "token_address": token_address,
+                "chain": chain,
+                "time_frame": time_frame,
+                "sort_by": sort_by,
+                "total_found": result.get("total", len(traders)),
+                "traders": [
+                    {
+                        "address": t.get("address"),
+                        "pnl_usd": str(t.get("pnl_usd", 0)),
+                        "volume_usd": str(t.get("volume_usd", 0)),
+                        "trade_count": t.get("trade_count"),
+                        "win_rate": t.get("win_rate"),
+                    }
+                    for t in traders
+                ],
+                "instructions": [
+                    f"Found {len(traders)} top traders for this token over {time_frame}.",
+                    "To copy a trader, use start_copy_trading with their address.",
+                    "To analyze a trader first, use get_trader_profile.",
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error fetching top traders: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_get_trader_profile(
+        self,
+        wallet_address: str,
+        chain: str = "solana",
+    ) -> Dict[str, Any]:
+        """Get detailed profile for a trader wallet."""
+        try:
+            from ...providers.birdeye import get_birdeye_provider
+
+            birdeye = get_birdeye_provider()
+
+            if not await birdeye.ready():
+                return {
+                    "success": False,
+                    "error": "Birdeye API not configured. Please set BIRDEYE_API_KEY.",
+                }
+
+            # Fetch portfolio, PnL, and trade history in parallel
+            import asyncio
+
+            portfolio_task = birdeye.get_wallet_portfolio(wallet_address, chain)
+            pnl_task = birdeye.get_wallet_pnl(wallet_address, chain)
+            trades_task = birdeye.get_wallet_trade_history(wallet_address, chain, limit=20)
+
+            portfolio, pnl, trades = await asyncio.gather(
+                portfolio_task, pnl_task, trades_task
+            )
+
+            return {
+                "success": True,
+                "address": wallet_address,
+                "chain": chain,
+                "portfolio": {
+                    "total_value_usd": str(portfolio.get("total_value_usd", 0)),
+                    "token_count": portfolio.get("token_count", 0),
+                    "top_holdings": [
+                        {
+                            "symbol": h.get("symbol"),
+                            "value_usd": str(h.get("value_usd", 0)),
+                        }
+                        for h in portfolio.get("holdings", [])[:5]
+                    ],
+                },
+                "performance": {
+                    "total_pnl_usd": str(pnl.get("total_pnl_usd", 0)),
+                    "realized_pnl_usd": str(pnl.get("realized_pnl_usd", 0)),
+                    "unrealized_pnl_usd": str(pnl.get("unrealized_pnl_usd", 0)),
+                    "win_rate": pnl.get("win_rate"),
+                    "trade_count": pnl.get("trade_count"),
+                },
+                "recent_trades": [
+                    {
+                        "from_token": t.get("from_token"),
+                        "to_token": t.get("to_token"),
+                        "timestamp": t.get("timestamp").isoformat() if t.get("timestamp") else None,
+                    }
+                    for t in trades.get("trades", [])[:5]
+                ],
+                "instructions": [
+                    "This trader's profile shows their portfolio, performance, and recent activity.",
+                    "To start copying this trader, use start_copy_trading with their address.",
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error fetching trader profile: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_start_copy_trading(
+        self,
+        leader_address: str,
+        leader_chain: str,
+        follower_address: str,
+        follower_chain: str,
+        sizing_mode: str = "fixed",
+        size_value: float = 100,
+        max_trade_usd: float = 1000,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Start copying a wallet."""
+        try:
+            from decimal import Decimal
+            from ..copy_trading.manager import CopyTradingManager
+            from ..copy_trading.models import CopyConfig, SizingMode
+            from ...db import get_convex_client
+            from ...services.events.service import get_event_monitoring_service
+
+            if not _user_id:
+                return {
+                    "success": False,
+                    "error": "User must be authenticated to start copy trading.",
+                }
+
+            # Get services
+            convex = get_convex_client()
+            event_service = get_event_monitoring_service()
+
+            # Create manager
+            manager = CopyTradingManager(convex_client=convex)
+
+            # Create config
+            config = CopyConfig(
+                leader_address=leader_address,
+                leader_chain=leader_chain,
+                sizing_mode=SizingMode(sizing_mode),
+                size_value=Decimal(str(size_value)),
+                max_trade_usd=Decimal(str(max_trade_usd)),
+            )
+
+            # Start relationship
+            relationship = await manager.start_copying(
+                user_id=_user_id,
+                follower_address=follower_address,
+                follower_chain=follower_chain,
+                config=config,
+            )
+
+            # Subscribe to leader wallet events
+            from ...services.events.models import ChainType
+
+            chain_type = ChainType(leader_chain.lower())
+            await event_service.subscribe_address(
+                address=leader_address,
+                chain=chain_type,
+                user_id=_user_id,
+                label=f"Copy trading: {leader_address[:8]}...",
+            )
+
+            return {
+                "success": True,
+                "relationship_id": relationship.id,
+                "leader": {
+                    "address": leader_address,
+                    "chain": leader_chain,
+                },
+                "follower": {
+                    "address": follower_address,
+                    "chain": follower_chain,
+                },
+                "config": {
+                    "sizing_mode": sizing_mode,
+                    "size_value": str(size_value),
+                    "max_trade_usd": str(max_trade_usd),
+                },
+                "status": "active",
+                "instructions": [
+                    f"Now following {leader_address[:8]}... on {leader_chain}.",
+                    "You'll receive notifications when they make trades.",
+                    "Each trade requires your manual approval before execution.",
+                    "Use list_copy_relationships to see all wallets you're following.",
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error starting copy trading: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_stop_copy_trading(
+        self,
+        relationship_id: str,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Stop copying a wallet."""
+        try:
+            from ..copy_trading.manager import CopyTradingManager
+            from ...db import get_convex_client
+
+            if not _user_id:
+                return {
+                    "success": False,
+                    "error": "User must be authenticated.",
+                }
+
+            convex = get_convex_client()
+            manager = CopyTradingManager(convex_client=convex)
+
+            relationship = await manager.stop_copying(relationship_id)
+
+            return {
+                "success": True,
+                "relationship_id": relationship_id,
+                "status": "stopped",
+                "message": f"Stopped copying {relationship.config.leader_address[:8]}...",
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error stopping copy trading: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_list_copy_relationships(
+        self,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List user's copy trading relationships."""
+        try:
+            from ..copy_trading.manager import CopyTradingManager
+            from ...db import get_convex_client
+
+            if not _user_id:
+                return {
+                    "success": False,
+                    "error": "User must be authenticated.",
+                }
+
+            convex = get_convex_client()
+            manager = CopyTradingManager(convex_client=convex)
+
+            relationships = await manager.get_relationships_for_user(_user_id)
+
+            return {
+                "success": True,
+                "total": len(relationships),
+                "active": sum(1 for r in relationships if r.is_active and not r.is_paused),
+                "relationships": [
+                    {
+                        "id": r.id,
+                        "leader_address": r.config.leader_address,
+                        "leader_chain": r.config.leader_chain,
+                        "is_active": r.is_active,
+                        "is_paused": r.is_paused,
+                        "total_trades": r.total_trades,
+                        "successful_trades": r.successful_trades,
+                        "total_volume_usd": str(r.total_volume_usd),
+                    }
+                    for r in relationships
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error listing copy relationships: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_get_pending_copy_trades(
+        self,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get pending copy trade approvals."""
+        try:
+            from ..copy_trading.manager import CopyTradingManager
+            from ...db import get_convex_client
+
+            if not _user_id:
+                return {
+                    "success": False,
+                    "error": "User must be authenticated.",
+                }
+
+            convex = get_convex_client()
+            manager = CopyTradingManager(convex_client=convex)
+
+            pending = await manager.get_pending_approvals(_user_id)
+
+            return {
+                "success": True,
+                "total_pending": len(pending),
+                "pending_trades": [
+                    {
+                        "execution_id": p.id,
+                        "relationship_id": p.relationship_id,
+                        "leader_address": p.signal.leader_address,
+                        "action": p.signal.action.value if hasattr(p.signal.action, "value") else p.signal.action,
+                        "token_in": p.signal.token_in_symbol,
+                        "token_out": p.signal.token_out_symbol,
+                        "value_usd": str(p.signal.value_usd) if p.signal.value_usd else None,
+                        "calculated_size_usd": str(p.calculated_size_usd) if p.calculated_size_usd else None,
+                        "timestamp": p.signal.timestamp.isoformat(),
+                    }
+                    for p in pending
+                ],
+                "instructions": [
+                    f"You have {len(pending)} copy trade(s) pending approval.",
+                    "Use approve_copy_trade to execute, or reject_copy_trade to skip.",
+                ] if pending else ["No pending copy trades."],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error fetching pending trades: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_approve_copy_trade(
+        self,
+        execution_id: str,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Approve and execute a pending copy trade."""
+        try:
+            from ..copy_trading.manager import CopyTradingManager
+            from ..copy_trading.models import CopyExecutionStatus
+            from ...db import get_convex_client
+
+            if not _user_id:
+                return {
+                    "success": False,
+                    "error": "User must be authenticated.",
+                }
+
+            convex = get_convex_client()
+            manager = CopyTradingManager(convex_client=convex)
+
+            execution = await manager.approve_execution(execution_id, _user_id)
+
+            status = execution.status.value if hasattr(execution.status, "value") else str(execution.status)
+
+            if execution.status == CopyExecutionStatus.COMPLETED:
+                return {
+                    "success": True,
+                    "execution_id": execution_id,
+                    "status": status,
+                    "tx_hash": execution.tx_hash,
+                    "actual_size_usd": str(execution.actual_size_usd) if execution.actual_size_usd else None,
+                    "message": "Copy trade executed successfully!",
+                }
+            elif execution.status == CopyExecutionStatus.EXPIRED:
+                return {
+                    "success": False,
+                    "execution_id": execution_id,
+                    "status": status,
+                    "error": execution.error_message or "Trade expired",
+                }
+            else:
+                return {
+                    "success": False,
+                    "execution_id": execution_id,
+                    "status": status,
+                    "error": execution.error_message or "Execution failed",
+                }
+
+        except Exception as e:
+            self.logger.error(f"Error approving copy trade: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_reject_copy_trade(
+        self,
+        execution_id: str,
+        reason: Optional[str] = None,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Reject a pending copy trade."""
+        try:
+            from ..copy_trading.manager import CopyTradingManager
+            from ...db import get_convex_client
+
+            if not _user_id:
+                return {
+                    "success": False,
+                    "error": "User must be authenticated.",
+                }
+
+            convex = get_convex_client()
+            manager = CopyTradingManager(convex_client=convex)
+
+            execution = await manager.reject_execution(execution_id, _user_id, reason)
+
+            return {
+                "success": True,
+                "execution_id": execution_id,
+                "status": "rejected",
+                "reason": reason or "User rejected",
+                "message": "Copy trade skipped.",
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error rejecting copy trade: {e}")
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # Polymarket Handlers
+    # =========================================================================
+
+    async def _handle_get_polymarket_markets(
+        self,
+        category: Optional[str] = None,
+        query: Optional[str] = None,
+        trending: bool = False,
+        closing_soon_hours: Optional[int] = None,
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Get Polymarket prediction markets."""
+        try:
+            from ..polymarket.trading import get_polymarket_trading_service
+
+            service = get_polymarket_trading_service()
+            markets = await service.get_markets(
+                category=category,
+                query=query,
+                trending=trending,
+                closing_soon_hours=closing_soon_hours,
+                limit=limit,
+            )
+
+            return {
+                "success": True,
+                "count": len(markets),
+                "markets": [
+                    {
+                        "market_id": m.condition_id,
+                        "question": m.question,
+                        "outcomes": m.outcomes,
+                        "prices": {
+                            t.outcome: f"{float(t.price)*100:.1f}%"
+                            for t in m.tokens
+                        },
+                        "volume_usd": float(m.volume),
+                        "volume_24h_usd": float(m.volume_24h),
+                        "end_date": m.end_date.isoformat() if m.end_date else None,
+                        "active": m.active,
+                        "tags": m.tags[:3],
+                    }
+                    for m in markets
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error fetching Polymarket markets: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_get_polymarket_market(
+        self,
+        market_id: str,
+    ) -> Dict[str, Any]:
+        """Get detailed Polymarket market info."""
+        try:
+            from ..polymarket.trading import get_polymarket_trading_service
+
+            service = get_polymarket_trading_service()
+            details = await service.get_market_details(market_id)
+
+            if not details:
+                return {"success": False, "error": "Market not found"}
+
+            market = details["market"]
+            orderbooks = details.get("orderbooks", {})
+            spreads = details.get("spreads", {})
+
+            return {
+                "success": True,
+                "market": {
+                    "market_id": market.condition_id,
+                    "question": market.question,
+                    "description": market.description,
+                    "outcomes": market.outcomes,
+                    "prices": {
+                        t.outcome: {
+                            "price": float(t.price),
+                            "probability": f"{float(t.price)*100:.1f}%",
+                            "token_id": t.token_id,
+                        }
+                        for t in market.tokens
+                    },
+                    "volume_usd": float(market.volume),
+                    "volume_24h_usd": float(market.volume_24h),
+                    "liquidity_usd": float(market.liquidity),
+                    "end_date": market.end_date.isoformat() if market.end_date else None,
+                    "active": market.active,
+                    "resolved": market.resolved,
+                    "tags": market.tags,
+                },
+                "orderbook_depth": {
+                    outcome: {
+                        "best_bid": float(ob.best_bid) if ob.best_bid else None,
+                        "best_ask": float(ob.best_ask) if ob.best_ask else None,
+                        "spread": float(ob.spread) if ob.spread else None,
+                        "bid_levels": len(ob.bids),
+                        "ask_levels": len(ob.asks),
+                    }
+                    for outcome, ob in orderbooks.items()
+                },
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error fetching Polymarket market: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_get_polymarket_portfolio(
+        self,
+        _wallet_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get user's Polymarket portfolio."""
+        try:
+            from ..polymarket.trading import get_polymarket_trading_service
+
+            if not _wallet_address:
+                return {"success": False, "error": "Wallet address required"}
+
+            service = get_polymarket_trading_service()
+            portfolio = await service.get_portfolio(_wallet_address)
+
+            return {
+                "success": True,
+                "portfolio": {
+                    "address": portfolio.address,
+                    "total_value_usd": float(portfolio.total_value),
+                    "total_cost_basis_usd": float(portfolio.total_cost_basis),
+                    "total_pnl_usd": float(portfolio.total_pnl),
+                    "total_pnl_pct": portfolio.total_pnl_pct,
+                    "open_positions": portfolio.open_positions_count,
+                    "winning_positions": portfolio.winning_positions,
+                    "losing_positions": portfolio.losing_positions,
+                },
+                "positions": [
+                    {
+                        "market_question": p.market_question,
+                        "outcome": p.outcome_name,
+                        "shares": float(p.size),
+                        "avg_price": float(p.avg_price),
+                        "current_price": float(p.current_price),
+                        "value_usd": float(p.current_value),
+                        "cost_basis_usd": float(p.cost_basis),
+                        "pnl_usd": float(p.unrealized_pnl),
+                        "pnl_pct": p.unrealized_pnl_pct,
+                        "market_end_date": p.market_end_date.isoformat() if p.market_end_date else None,
+                    }
+                    for p in portfolio.positions
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error fetching Polymarket portfolio: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_get_polymarket_quote(
+        self,
+        market_id: str,
+        outcome: str,
+        side: str,
+        amount_usd: float,
+        _wallet_address: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get a quote for a Polymarket trade."""
+        try:
+            from decimal import Decimal
+            from ..polymarket.trading import get_polymarket_trading_service
+            from ...providers.polymarket.models import OrderSide
+
+            service = get_polymarket_trading_service()
+
+            side_enum = OrderSide.BUY if side.upper() == "BUY" else OrderSide.SELL
+
+            if side_enum == OrderSide.BUY:
+                quote = await service.get_buy_quote(
+                    market_id=market_id,
+                    outcome=outcome,
+                    amount_usd=Decimal(str(amount_usd)),
+                )
+            else:
+                quote = await service.get_sell_quote(
+                    market_id=market_id,
+                    outcome=outcome,
+                    shares=Decimal(str(amount_usd)),  # For sell, amount is shares
+                    address=_wallet_address,
+                )
+
+            if not quote:
+                return {"success": False, "error": "Could not generate quote"}
+
+            result = {
+                "success": True,
+                "quote": {
+                    "market_id": quote.market_id,
+                    "outcome": quote.outcome_name,
+                    "side": quote.side.value,
+                    "amount_usd": float(quote.amount_usd),
+                    "shares": float(quote.shares),
+                    "avg_price": float(quote.avg_price),
+                    "price_impact_pct": quote.price_impact_pct,
+                },
+            }
+
+            if side_enum == OrderSide.BUY:
+                result["quote"]["max_payout_usd"] = float(quote.max_payout) if quote.max_payout else None
+                result["quote"]["potential_profit_usd"] = float(quote.potential_profit) if quote.potential_profit else None
+                result["quote"]["potential_profit_pct"] = quote.potential_profit_pct
+
+            result["instructions"] = [
+                f"{'Buying' if side_enum == OrderSide.BUY else 'Selling'} {float(quote.shares):.2f} shares of {outcome}",
+                f"Average price: ${float(quote.avg_price):.4f} per share",
+                f"Price impact: {quote.price_impact_pct:.2f}%",
+            ]
+
+            if quote.max_payout:
+                result["instructions"].append(
+                    f"If {outcome} wins, you'll receive ${float(quote.max_payout):.2f} (potential profit: ${float(quote.potential_profit):.2f})"
+                )
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Error getting Polymarket quote: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_analyze_polymarket(
+        self,
+        market_id: str,
+    ) -> Dict[str, Any]:
+        """Analyze a Polymarket market."""
+        try:
+            from ..polymarket.trading import get_polymarket_trading_service
+
+            service = get_polymarket_trading_service()
+            analysis = await service.analyze_market(market_id)
+
+            if not analysis:
+                return {"success": False, "error": "Market not found"}
+
+            return {
+                "success": True,
+                "analysis": {
+                    "market_id": analysis.market_id,
+                    "question": analysis.question,
+                    "current_prices": {
+                        "yes": f"{float(analysis.current_yes_price)*100:.1f}%",
+                        "no": f"{float(analysis.current_no_price)*100:.1f}%",
+                    },
+                    "summary": analysis.summary,
+                    "key_factors": analysis.key_factors,
+                    "sentiment": analysis.sentiment,
+                    "confidence": analysis.confidence,
+                    "volume_trend": analysis.volume_trend,
+                    "recommendation": {
+                        "side": analysis.recommended_side,
+                        "reason": analysis.recommended_reason,
+                    } if analysis.recommended_side else None,
+                    "analyzed_at": analysis.analyzed_at.isoformat(),
+                },
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error analyzing Polymarket market: {e}")
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
+    # Polymarket Copy Trading Handlers
+    # =========================================================================
+
+    async def _handle_get_polymarket_top_traders(
+        self,
+        sort_by: str = "roi",
+        limit: int = 20,
+    ) -> Dict[str, Any]:
+        """Get top Polymarket traders."""
+        try:
+            from ...services.polymarket_analytics import get_leaderboard
+
+            leaderboard = get_leaderboard()
+            entries = await leaderboard.get_leaderboard(
+                sort_by=sort_by,
+                limit=limit,
+                min_trades=10,
+            )
+
+            return {
+                "success": True,
+                "count": len(entries),
+                "sort_by": sort_by,
+                "traders": [
+                    {
+                        "rank": e.rank,
+                        "address": e.address,
+                        "total_pnl_usd": float(e.total_pnl_usd),
+                        "roi_pct": e.roi_pct,
+                        "win_rate": e.win_rate,
+                        "total_volume_usd": float(e.total_volume_usd),
+                        "active_positions": e.active_positions,
+                        "total_trades": e.total_trades,
+                        "follower_count": e.follower_count,
+                    }
+                    for e in entries
+                ],
+                "instructions": [
+                    "Use get_polymarket_trader_profile to see detailed stats for a specific trader.",
+                    "Use start_polymarket_copy to begin copying a trader.",
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error getting top Polymarket traders: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_get_polymarket_trader_profile(
+        self,
+        address: str,
+    ) -> Dict[str, Any]:
+        """Get detailed Polymarket trader profile."""
+        try:
+            from ...services.polymarket_analytics import get_trader_tracker
+
+            tracker = get_trader_tracker()
+            profile = await tracker.get_trader_profile(address)
+
+            return {
+                "success": True,
+                "profile": {
+                    "address": profile.address,
+                    "is_experienced": profile.is_experienced,
+                    "is_profitable": profile.is_profitable,
+                    "performance": {
+                        "total_pnl_usd": float(profile.metrics.total_pnl_usd),
+                        "roi_pct": profile.metrics.roi_pct,
+                        "win_rate": profile.metrics.win_rate,
+                        "total_trades": profile.metrics.total_trades,
+                        "total_volume_usd": float(profile.metrics.total_volume_usd),
+                        "brier_score": profile.metrics.brier_score,
+                    },
+                    "current_state": {
+                        "active_positions": profile.active_positions,
+                        "total_exposure_usd": float(profile.total_exposure_usd),
+                        "avg_position_size_usd": float(profile.avg_position_size_usd),
+                    },
+                    "trading_style": {
+                        "preferred_categories": profile.preferred_categories,
+                        "avg_hold_time_days": profile.avg_hold_time_days,
+                        "trades_per_week": profile.trades_per_week,
+                    },
+                    "risk": {
+                        "risk_score": profile.risk_score,
+                        "diversification_score": profile.diversification_score,
+                        "max_single_bet_pct": profile.max_single_bet_pct,
+                    },
+                    "social": {
+                        "follower_count": profile.follower_count,
+                        "total_copied_volume_usd": float(profile.total_copied_volume_usd),
+                    },
+                    "last_trade_at": profile.last_trade_at.isoformat() if profile.last_trade_at else None,
+                },
+                "instructions": [
+                    "Use start_polymarket_copy to begin copying this trader.",
+                ] if profile.is_experienced else [
+                    "This trader has limited history. Consider waiting for more data.",
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error getting Polymarket trader profile: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_start_polymarket_copy(
+        self,
+        leader_address: str,
+        sizing_mode: str = "percentage",
+        size_value: float = 10.0,
+        max_exposure_usd: float = 1000.0,
+        _wallet_address: Optional[str] = None,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Start copying a Polymarket trader."""
+        try:
+            from decimal import Decimal
+            from ..polymarket.copy_trading import (
+                get_polymarket_copy_manager,
+                PolymarketCopyConfig,
+                PMSizingMode,
+            )
+
+            if not _wallet_address or not _user_id:
+                return {"success": False, "error": "User must be authenticated"}
+
+            # Parse sizing mode
+            mode_map = {
+                "percentage": PMSizingMode.PERCENTAGE,
+                "fixed": PMSizingMode.FIXED,
+                "proportional": PMSizingMode.PROPORTIONAL,
+            }
+            mode = mode_map.get(sizing_mode.lower(), PMSizingMode.PERCENTAGE)
+
+            config = PolymarketCopyConfig(
+                leaderAddress=leader_address,
+                sizingMode=mode,
+                sizeValue=Decimal(str(size_value)),
+                maxExposureUsd=Decimal(str(max_exposure_usd)),
+            )
+
+            manager = get_polymarket_copy_manager()
+            relationship = await manager.start_copying(
+                user_id=_user_id,
+                follower_address=_wallet_address,
+                config=config,
+            )
+
+            return {
+                "success": True,
+                "relationship_id": relationship.id,
+                "leader_address": leader_address,
+                "sizing": f"{size_value}% of leader's position" if mode == PMSizingMode.PERCENTAGE else f"${size_value} per trade",
+                "max_exposure": f"${max_exposure_usd}",
+                "message": f"Now copying {leader_address}. You'll be notified when they make trades.",
+                "instructions": [
+                    "You will receive pending approvals when this trader makes trades.",
+                    "Use get_pending_polymarket_copies to see trades awaiting approval.",
+                    "Use approve_polymarket_copy or reject_polymarket_copy to handle them.",
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error starting Polymarket copy: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_stop_polymarket_copy(
+        self,
+        relationship_id: str,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Stop copying a Polymarket trader."""
+        try:
+            from ..polymarket.copy_trading import get_polymarket_copy_manager
+
+            if not _user_id:
+                return {"success": False, "error": "User must be authenticated"}
+
+            manager = get_polymarket_copy_manager()
+            relationship = await manager.stop_copying(relationship_id)
+
+            return {
+                "success": True,
+                "relationship_id": relationship_id,
+                "leader_address": relationship.config.leader_address,
+                "message": "Stopped copying this trader. Your existing positions remain unchanged.",
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error stopping Polymarket copy: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_list_polymarket_copy_relationships(
+        self,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List Polymarket copy relationships."""
+        try:
+            from ..polymarket.copy_trading import get_polymarket_copy_manager
+
+            if not _user_id:
+                return {"success": False, "error": "User must be authenticated"}
+
+            manager = get_polymarket_copy_manager()
+            relationships = await manager.get_relationships_for_user(_user_id)
+
+            return {
+                "success": True,
+                "count": len(relationships),
+                "relationships": [
+                    {
+                        "relationship_id": r.id,
+                        "leader_address": r.config.leader_address,
+                        "is_active": r.is_active,
+                        "is_paused": r.is_paused,
+                        "pause_reason": r.pause_reason,
+                        "sizing": f"{r.config.size_value}% ({r.config.sizing_mode.value})",
+                        "stats": {
+                            "total_copied": r.total_copied_positions,
+                            "successful": r.successful_copies,
+                            "failed": r.failed_copies,
+                            "skipped": r.skipped_copies,
+                            "total_volume_usd": float(r.total_volume_usd),
+                        },
+                        "current_exposure_usd": float(r.current_exposure_usd),
+                        "max_exposure_usd": float(r.config.max_exposure_usd),
+                        "last_copy_at": r.last_copy_at.isoformat() if r.last_copy_at else None,
+                    }
+                    for r in relationships
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error listing Polymarket copy relationships: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_get_pending_polymarket_copies(
+        self,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get pending Polymarket copy executions."""
+        try:
+            from ..polymarket.copy_trading import get_polymarket_copy_manager
+
+            if not _user_id:
+                return {"success": False, "error": "User must be authenticated"}
+
+            manager = get_polymarket_copy_manager()
+            pending = await manager.get_pending_approvals(_user_id)
+
+            return {
+                "success": True,
+                "count": len(pending),
+                "pending_copies": [
+                    {
+                        "execution_id": p.id,
+                        "leader_address": p.leader_address,
+                        "action": p.leader_action,
+                        "market_question": p.market_question,
+                        "outcome": p.outcome,
+                        "leader_value_usd": float(p.leader_value_usd),
+                        "your_calculated_value_usd": float(p.calculated_value_usd) if p.calculated_value_usd else None,
+                        "detected_at": p.detected_at.isoformat(),
+                        "expires_at": p.expires_at.isoformat() if p.expires_at else None,
+                    }
+                    for p in pending
+                ],
+                "instructions": [
+                    f"You have {len(pending)} pending copy trade(s).",
+                    "Use approve_polymarket_copy to execute, or reject_polymarket_copy to skip.",
+                ] if pending else ["No pending copy trades."],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error getting pending Polymarket copies: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_approve_polymarket_copy(
+        self,
+        execution_id: str,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Approve a pending Polymarket copy execution."""
+        try:
+            from ..polymarket.copy_trading import get_polymarket_copy_manager
+
+            if not _user_id:
+                return {"success": False, "error": "User must be authenticated"}
+
+            manager = get_polymarket_copy_manager()
+            execution = await manager.approve_execution(execution_id, _user_id)
+
+            result = {
+                "success": True,
+                "execution_id": execution_id,
+                "status": execution.status.value,
+                "market_question": execution.market_question,
+                "outcome": execution.outcome,
+                "action": execution.leader_action,
+            }
+
+            if execution.quote:
+                result["quote"] = {
+                    "shares": float(execution.quote.shares),
+                    "avg_price": float(execution.quote.avg_price),
+                    "amount_usd": float(execution.quote.amount_usd),
+                    "price_impact_pct": execution.quote.price_impact_pct,
+                }
+                if execution.quote.potential_profit:
+                    result["quote"]["potential_profit_usd"] = float(execution.quote.potential_profit)
+                    result["quote"]["potential_profit_pct"] = execution.quote.potential_profit_pct
+
+            result["instructions"] = [
+                "Quote ready. Please sign the transaction in your wallet to complete.",
+                "The trade will be executed on Polymarket.",
+            ]
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Error approving Polymarket copy: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_reject_polymarket_copy(
+        self,
+        execution_id: str,
+        reason: Optional[str] = None,
+        _user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Reject a pending Polymarket copy execution."""
+        try:
+            from ..polymarket.copy_trading import get_polymarket_copy_manager
+
+            if not _user_id:
+                return {"success": False, "error": "User must be authenticated"}
+
+            manager = get_polymarket_copy_manager()
+            execution = await manager.reject_execution(execution_id, _user_id, reason)
+
+            return {
+                "success": True,
+                "execution_id": execution_id,
+                "status": "rejected",
+                "reason": reason or "User rejected",
+                "message": "Copy trade skipped.",
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error rejecting Polymarket copy: {e}")
             return {"success": False, "error": str(e)}
 
 

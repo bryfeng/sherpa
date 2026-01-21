@@ -4,7 +4,7 @@ info:
   version: 1.0.0
   description: |
     JSON-RPC call that fetches the balance of a specific ERC-20 contract for a wallet. Mirrors the
-    `get_token_balance_for_contract` coroutine in `sherpa/app/providers/alchemy.py`.
+    `get_token_balance_for_contract` coroutine in `backend/app/providers/alchemy.py`.
 servers:
   - url: https://eth-mainnet.g.alchemy.com/v2/{apiKey}
     description: Alchemy Ethereum Mainnet endpoint. Replace `{apiKey}` with your key.

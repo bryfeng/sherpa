@@ -11,6 +11,7 @@ import logging
 
 from ..config import settings
 from ..db import get_convex_client
+from ..providers.llm import get_llm_provider
 from ..services.news_fetcher.service import NewsFetcherService
 
 logger = logging.getLogger(__name__)
@@ -158,8 +159,16 @@ async def trigger_news_fetch(
     try:
         convex = get_convex_client()
 
+        # Initialize ZAI LLM provider for news classification during fetch
+        llm_provider = None
+        try:
+            llm_provider = get_llm_provider("zai")
+            logger.info(f"Fetch cycle using ZAI LLM provider: {llm_provider.model}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize ZAI provider for fetch: {e}")
+
         # Run the fetch cycle
-        service = NewsFetcherService(convex_client=convex)
+        service = NewsFetcherService(convex_client=convex, llm_provider=llm_provider)
         stats = await service.run_fetch_cycle()
 
         errors = stats.get("errors", [])
@@ -198,11 +207,20 @@ async def trigger_news_processing(
     try:
         convex = get_convex_client()
 
+        # Initialize ZAI LLM provider for news classification
+        llm_provider = None
+        try:
+            llm_provider = get_llm_provider("zai")
+            logger.info(f"Using ZAI LLM provider with model: {llm_provider.model}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize ZAI provider, using rule-based fallback: {e}")
+
         # Run the processor with config
         config = WorkerConfig(max_items_per_run=limit)
         result = await run_news_processor_worker(
             convex_client=convex,
             config=config,
+            llm_provider=llm_provider,
         )
 
         return FetchResult(

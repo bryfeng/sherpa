@@ -5,7 +5,7 @@ info:
   description: |
     JSON-RPC call against the Alchemy Ethereum Mainnet endpoint that returns the native ETH
     balance for a wallet. Matches the `get_native_balance` coroutine in
-    `sherpa/app/providers/alchemy.py`.
+    `backend/app/providers/alchemy.py`.
 servers:
   - url: https://eth-mainnet.g.alchemy.com/v2/{apiKey}
     description: Alchemy Ethereum Mainnet endpoint. Replace `{apiKey}` with your Alchemy key.

@@ -4,7 +4,7 @@ info:
   version: 1.0.0
   description: |
     Consolidated OpenAPI description for the Alchemy-powered helper coroutines defined in
-    `sherpa/app/providers/alchemy.py`. Includes the lightweight health probe, JSON-RPC methods for
+    `backend/app/providers/alchemy.py`. Includes the lightweight health probe, JSON-RPC methods for
     balances and token metadata, and the REST NFT ownership lookup so the spec can be imported into
     an agent tool builder.
 servers:
@@ -69,7 +69,7 @@ paths:
       description: |
         Wrapper around the POST JSON-RPC interface. The request body must match one of the
         documented method shapes. Each example corresponds to a coroutine in
-        `sherpa/app/providers/alchemy.py`.
+        `backend/app/providers/alchemy.py`.
       tags:
         - Alchemy JSON-RPC
       requestBody:

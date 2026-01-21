@@ -2,6 +2,7 @@
 DCA Strategy Models
 
 Data models for DCA strategy configuration and execution.
+Supports both EVM chains (int chain IDs) and Solana (str chain ID).
 """
 
 from __future__ import annotations
@@ -10,7 +11,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
+
+# Type alias for chain IDs (int for EVM, "solana" for Solana)
+ChainId = Union[int, str]
+
+
+def is_solana_chain(chain_id: ChainId) -> bool:
+    """Check if a chain ID represents Solana."""
+    if isinstance(chain_id, str):
+        return chain_id.lower() == "solana"
+    return False
 
 
 class DCAFrequency(str, Enum):
@@ -59,7 +70,7 @@ class TokenInfo:
     """Token information for DCA."""
     symbol: str
     address: str
-    chain_id: int
+    chain_id: ChainId  # int for EVM, "solana" for Solana
     decimals: int
 
     def to_dict(self) -> Dict[str, Any]:
@@ -78,6 +89,11 @@ class TokenInfo:
             chain_id=data["chainId"],
             decimals=data["decimals"],
         )
+
+    @property
+    def is_solana(self) -> bool:
+        """Check if this token is on Solana."""
+        return is_solana_chain(self.chain_id)
 
 
 @dataclass
@@ -254,17 +270,29 @@ class DCAStrategy:
 
 @dataclass
 class MarketConditions:
-    """Market conditions at execution time."""
+    """Market conditions at execution time.
+
+    Supports both EVM (gas_gwei) and Solana (priority_fee_lamports).
+    """
     token_price_usd: Decimal
-    gas_gwei: Decimal
     estimated_gas_usd: Decimal
+    # EVM-specific
+    gas_gwei: Optional[Decimal] = None
+    # Solana-specific
+    priority_fee_lamports: Optional[int] = None
+    is_solana: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "tokenPriceUsd": float(self.token_price_usd),
-            "gasGwei": float(self.gas_gwei),
             "estimatedGasUsd": float(self.estimated_gas_usd),
+            "isSolana": self.is_solana,
         }
+        if self.gas_gwei is not None:
+            result["gasGwei"] = float(self.gas_gwei)
+        if self.priority_fee_lamports is not None:
+            result["priorityFeeLamports"] = self.priority_fee_lamports
+        return result
 
 
 @dataclass
@@ -292,7 +320,7 @@ class DCAExecution:
     id: str
     strategy_id: str
     execution_number: int
-    chain_id: int
+    chain_id: ChainId  # int for EVM, "solana" for Solana
 
     # Status
     status: ExecutionStatus = ExecutionStatus.PENDING
@@ -374,7 +402,7 @@ class SessionKeyRequirements:
     value_per_tx_usd: Decimal
     total_value_usd: Decimal
     token_allowlist: List[str]
-    chain_allowlist: List[int]
+    chain_allowlist: List[ChainId]  # List of chain IDs (int for EVM, "solana" for Solana)
     duration_days: int = 30
 
     @classmethod

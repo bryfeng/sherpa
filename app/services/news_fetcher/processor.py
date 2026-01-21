@@ -205,6 +205,7 @@ class NewsProcessor:
                 messages=messages,
                 temperature=0.1,  # Low temperature for consistent classification
                 max_tokens=1000,
+                thinking={"type": "disabled"},  # Disable thinking for JSON output
             )
 
             if not response.content:

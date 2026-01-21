@@ -241,3 +241,9 @@ class ExecutionContext:
     execution_id: Optional[str] = None          # Links to strategy execution
     user_id: Optional[str] = None
     wallet_id: Optional[str] = None
+
+    # Policy/session enforcement
+    session_key_id: Optional[str] = None
+    require_policy: bool = True
+    require_session_key: bool = True
+    simulate: bool = True

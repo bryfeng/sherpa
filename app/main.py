@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks, copy_trading
+from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks, copy_trading, polymarket
 from .api import relay as relay_api
 from .agent_runtime.router import router as runtime_router
 from .agent_runtime import get_runtime, register_builtin_strategies
@@ -58,6 +58,7 @@ app.include_router(dca.router, tags=["DCA Strategies"])
 app.include_router(news.router, tags=["News"])
 app.include_router(webhooks.router, tags=["Webhooks"])
 app.include_router(copy_trading.router, tags=["Copy Trading"])
+app.include_router(polymarket.router, tags=["Polymarket"])
 
 
 @app.get("/")

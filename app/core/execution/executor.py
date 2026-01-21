@@ -11,13 +11,18 @@ Handles the full lifecycle of transaction execution:
 
 import asyncio
 import logging
+import re
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
 from app.config import settings
 from app.db.convex_client import get_convex_client, ConvexClient
+from app.core.policy import ActionContext, PolicyEngine, RiskPolicyConfig, SystemPolicyConfig
+from app.core.recovery import RecoveryExecutor
+from app.core.wallet.models import SessionKey
 
 from .models import (
     PreparedTransaction,
@@ -34,6 +39,13 @@ from .tx_builder import TransactionBuilder
 
 
 logger = logging.getLogger(__name__)
+
+ERC20_ALLOWANCE_SELECTOR = "0xdd62ed3e"  # allowance(address owner, address spender)
+NATIVE_TOKEN_SENTINELS = {
+    "0x0000000000000000000000000000000000000000",
+    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "native",
+}
 
 
 class ExecutionError(Exception):
@@ -64,6 +76,37 @@ class TransactionTimeoutError(ExecutionError):
     pass
 
 
+class PolicyRequiredError(ExecutionError):
+    """Risk policy required before autonomous execution."""
+    pass
+
+
+class SessionKeyRequiredError(ExecutionError):
+    """Session key required before autonomous execution."""
+    pass
+
+
+class PolicyViolationError(ExecutionError):
+    """Policy engine blocked the action."""
+
+    def __init__(self, message: str, violations: Optional[list[dict]] = None):
+        super().__init__(message)
+        self.violations = violations or []
+
+
+class ApprovalRequiredError(ExecutionError):
+    """Action requires manual approval."""
+
+    def __init__(self, message: str, approval_reason: Optional[str] = None):
+        super().__init__(message)
+        self.approval_reason = approval_reason
+
+
+class SignatureRequiredError(ExecutionError):
+    """Quote requires off-chain signatures before execution."""
+    pass
+
+
 class TransactionExecutor:
     """
     Executes transactions on EVM chains.
@@ -86,6 +129,7 @@ class TransactionExecutor:
         self.nonce_manager = nonce_manager or get_nonce_manager()
         self.convex = convex or get_convex_client()
         self._client = httpx.AsyncClient(timeout=60.0)
+        self._recovery = RecoveryExecutor()
 
         # RPC URLs per chain
         self._rpc_urls = rpc_urls or {
@@ -96,13 +140,12 @@ class TransactionExecutor:
             8453: f"https://base-mainnet.g.alchemy.com/v2/{settings.alchemy_api_key}",
         }
 
-    async def _rpc_call(
+    async def _rpc_call_raw(
         self,
         chain_id: int,
         method: str,
         params: List[Any],
     ) -> Any:
-        """Make an RPC call to the chain."""
         rpc_url = self._rpc_urls.get(chain_id)
         if not rpc_url:
             raise ValueError(f"No RPC URL configured for chain {chain_id}")
@@ -122,6 +165,235 @@ class TransactionExecutor:
             raise RuntimeError(f"RPC error: {result['error']}")
 
         return result.get("result")
+
+    async def _rpc_call(
+        self,
+        chain_id: int,
+        method: str,
+        params: List[Any],
+    ) -> Any:
+        """Make an RPC call to the chain with recovery."""
+        operation_name = f"rpc:{method}"
+
+        async def operation():
+            return await self._rpc_call_raw(chain_id, method, params)
+
+        recovery = await self._recovery.execute(
+            operation,
+            operation_name=operation_name,
+            provider="alchemy",
+            context={"chain_id": chain_id},
+        )
+        if not recovery.success:
+            raise recovery.error or RuntimeError("RPC call failed")
+        return recovery.result
+
+    @staticmethod
+    def _encode_uint256(value: int) -> str:
+        return format(value, "064x")
+
+    @staticmethod
+    def _encode_address(address: str) -> str:
+        addr = address.lower().replace("0x", "")
+        return addr.zfill(64)
+
+    def _is_native_token(self, token_address: Optional[str]) -> bool:
+        if not token_address:
+            return True
+        return token_address.lower() in NATIVE_TOKEN_SENTINELS
+
+    def _extract_revert_reason(self, error: Exception) -> Optional[str]:
+        message = str(error)
+        match = re.search(r"0x[0-9a-fA-F]{8,}", message)
+        if not match:
+            return None
+        data = match.group(0)
+        if not data.startswith("0x08c379a0"):
+            return None
+        try:
+            # Strip selector and offset
+            start = 2 + 8 + 64  # 0x + selector + offset
+            length_hex = data[start:start + 64]
+            length = int(length_hex, 16)
+            reason_hex = data[start + 64:start + 64 + length * 2]
+            return bytes.fromhex(reason_hex).decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+    async def _simulate_transaction(
+        self,
+        tx: PreparedTransaction,
+        block_tag: str = "latest",
+    ) -> None:
+        call_obj: Dict[str, Any] = {
+            "from": tx.from_address,
+            "to": tx.to_address,
+            "data": tx.data,
+        }
+        if tx.value:
+            call_obj["value"] = hex(tx.value)
+
+        try:
+            await self._rpc_call(
+                tx.chain_id,
+                "eth_call",
+                [call_obj, block_tag],
+            )
+        except Exception as e:
+            reason = self._extract_revert_reason(e)
+            raise TransactionRevertError(
+                f"Simulation reverted: {reason or str(e)}",
+                revert_reason=reason,
+            )
+
+    async def _get_allowance(
+        self,
+        chain_id: int,
+        token_address: str,
+        owner_address: str,
+        spender_address: str,
+    ) -> int:
+        calldata = (
+            ERC20_ALLOWANCE_SELECTOR
+            + self._encode_address(owner_address)
+            + self._encode_address(spender_address)
+        )
+        call_obj = {
+            "from": owner_address,
+            "to": token_address,
+            "data": calldata,
+        }
+        result = await self._rpc_call(chain_id, "eth_call", [call_obj, "latest"])
+        return int(result, 16) if isinstance(result, str) else int(result or 0)
+
+    async def _ensure_allowances(
+        self,
+        quote: SwapQuote | BridgeQuote,
+        context: ExecutionContext,
+    ) -> None:
+        if not quote.approvals:
+            return
+        if self._is_native_token(quote.token_in_address):
+            return
+
+        chain_id = quote.chain_id if hasattr(quote, "chain_id") else quote.origin_chain_id
+        for approval in quote.approvals:
+            data = approval.get("data", {}) if isinstance(approval, dict) else {}
+            spender = data.get("spender")
+            amount = data.get("amount") or data.get("value")
+            if not spender or amount is None:
+                continue
+
+            if isinstance(amount, str):
+                amount = int(amount, 16) if amount.startswith("0x") else int(amount)
+
+            allowance = await self._get_allowance(
+                chain_id=chain_id,
+                token_address=quote.token_in_address,
+                owner_address=quote.wallet_address,
+                spender_address=spender,
+            )
+            if allowance < amount:
+                raise ExecutionError(
+                    "Token approval required before execution (allowance insufficient)."
+                )
+
+    async def _get_risk_policy_config(self, wallet_address: str) -> RiskPolicyConfig:
+        policy_data = await self.convex.query(
+            "riskPolicies:getByWallet",
+            {"walletAddress": wallet_address.lower()},
+        )
+        if not policy_data or not policy_data.get("config"):
+            raise PolicyRequiredError(
+                "Risk policy required before autonomous execution. Draft a policy to enable execution."
+            )
+        return RiskPolicyConfig.from_dict(policy_data["config"])
+
+    async def _get_system_policy_config(self) -> SystemPolicyConfig:
+        data = await self.convex.query("systemPolicy:get", {})
+        if not data:
+            return SystemPolicyConfig()
+        return SystemPolicyConfig(
+            emergency_stop=data.get("emergencyStop", False),
+            emergency_stop_reason=data.get("emergencyStopReason"),
+            in_maintenance=data.get("inMaintenance", False),
+            maintenance_message=data.get("maintenanceMessage"),
+            blocked_contracts=data.get("blockedContracts", []),
+            blocked_tokens=data.get("blockedTokens", []),
+            blocked_chains=data.get("blockedChains", []),
+            allowed_chains=data.get("allowedChains", []),
+            protocol_whitelist_enabled=data.get("protocolWhitelistEnabled", False),
+            allowed_protocols=data.get("allowedProtocols", []),
+            max_single_tx_usd=Decimal(str(data.get("maxSingleTxUsd", "100000"))),
+        )
+
+    async def _get_session_key(self, session_key_id: str) -> SessionKey:
+        session_data = await self.convex.query(
+            "sessionKeys:get",
+            {"sessionId": session_key_id},
+        )
+        if not session_data:
+            raise SessionKeyRequiredError("Session key not found for autonomous execution.")
+        return SessionKey.from_dict(session_data)
+
+    async def _enforce_policy(
+        self,
+        *,
+        context: ExecutionContext,
+        action_type: str,
+        value_usd: float,
+        chain_id: Optional[int] = None,
+        token_in: Optional[str] = None,
+        token_out: Optional[str] = None,
+        contract_address: Optional[str] = None,
+        slippage_percent: Optional[float] = None,
+        estimated_gas_usd: Optional[float] = None,
+    ) -> None:
+        if not context.require_policy and not context.require_session_key:
+            return
+
+        risk_config: Optional[RiskPolicyConfig] = None
+        if context.require_policy:
+            risk_config = await self._get_risk_policy_config(context.wallet_address)
+
+        system_config = await self._get_system_policy_config()
+
+        session_key: Optional[SessionKey] = None
+        if context.require_session_key:
+            if not context.session_key_id:
+                raise SessionKeyRequiredError("Session key required for autonomous execution.")
+            session_key = await self._get_session_key(context.session_key_id)
+
+        action_context = ActionContext(
+            session_id=context.session_key_id or "autonomous",
+            wallet_address=context.wallet_address.lower(),
+            action_type=action_type,
+            chain_id=chain_id or context.chain_id,
+            value_usd=Decimal(str(value_usd)),
+            contract_address=contract_address,
+            token_in=token_in,
+            token_out=token_out,
+            slippage_percent=slippage_percent,
+            estimated_gas_usd=Decimal(str(estimated_gas_usd)) if estimated_gas_usd is not None else None,
+        )
+
+        result = PolicyEngine(
+            session_key=session_key,
+            risk_config=risk_config,
+            system_config=system_config,
+        ).evaluate(action_context)
+
+        if not result.approved:
+            raise PolicyViolationError(
+                f"Policy rejected action: {result.error_message or 'blocked'}",
+                violations=[v.to_dict() for v in result.violations],
+            )
+
+        if result.requires_approval:
+            raise ApprovalRequiredError(
+                "Action requires manual approval.",
+                approval_reason=result.approval_reason,
+            )
 
     async def estimate_gas(
         self,
@@ -210,6 +482,23 @@ class TransactionExecutor:
         Returns:
             TransactionResult with status and details
         """
+        await self._enforce_policy(
+            context=context,
+            action_type=TransactionType.SWAP.value,
+            chain_id=quote.chain_id,
+            value_usd=quote.value_in_usd,
+            token_in=quote.token_in_address,
+            token_out=quote.token_out_address,
+            contract_address=quote.tx.get("to") if isinstance(quote.tx, dict) else None,
+            slippage_percent=quote.slippage_bps / 100.0,
+            estimated_gas_usd=quote.gas_fee_usd,
+        )
+        if quote.signatures:
+            raise SignatureRequiredError(
+                "Quote requires off-chain signatures before execution."
+            )
+        await self._ensure_allowances(quote, context)
+
         # Build transaction from quote
         tx = TransactionBuilder.build_from_swap_quote(quote)
 
@@ -268,6 +557,23 @@ class TransactionExecutor:
         Returns:
             TransactionResult with status and details
         """
+        await self._enforce_policy(
+            context=context,
+            action_type=TransactionType.BRIDGE.value,
+            chain_id=quote.origin_chain_id,
+            value_usd=quote.value_in_usd,
+            token_in=quote.token_in_address,
+            token_out=quote.token_out_address,
+            contract_address=quote.tx.get("to") if isinstance(quote.tx, dict) else None,
+            slippage_percent=quote.slippage_bps / 100.0,
+            estimated_gas_usd=quote.gas_fee_usd,
+        )
+        if quote.signatures:
+            raise SignatureRequiredError(
+                "Quote requires off-chain signatures before execution."
+            )
+        await self._ensure_allowances(quote, context)
+
         # Build transaction from quote
         tx = TransactionBuilder.build_from_bridge_quote(quote)
 
@@ -335,6 +641,17 @@ class TransactionExecutor:
         Returns:
             TransactionResult with status and details
         """
+        await self._enforce_policy(
+            context=context,
+            action_type=TransactionType.APPROVE.value,
+            chain_id=chain_id,
+            value_usd=0.0,
+            token_in=token_address,
+            contract_address=token_address,
+            slippage_percent=None,
+            estimated_gas_usd=None,
+        )
+
         tx = TransactionBuilder.build_erc20_approve(
             chain_id=chain_id,
             owner_address=owner_address,
@@ -342,12 +659,36 @@ class TransactionExecutor:
             spender_address=spender_address,
             amount=amount,
         )
-
-        return await self._execute_transaction(
+        db_tx_id = await self._create_db_transaction(
             tx=tx,
             context=context,
-            signed_tx=signed_tx,
+            input_data={
+                "owner": owner_address,
+                "token": token_address,
+                "spender": spender_address,
+                "amount": amount,
+            },
         )
+
+        try:
+            result = await self._execute_transaction(
+                tx=tx,
+                context=context,
+                signed_tx=signed_tx,
+            )
+            await self._update_db_transaction(db_tx_id, result)
+            return result
+        except Exception as e:
+            await self._update_db_transaction(
+                db_tx_id,
+                TransactionResult(
+                    tx_id=tx.tx_id,
+                    status=TransactionStatus.FAILED,
+                    chain_id=tx.chain_id,
+                    error=str(e),
+                ),
+            )
+            raise
 
     async def _execute_transaction(
         self,
@@ -382,6 +723,9 @@ class TransactionExecutor:
                         address=tx.from_address,
                         chain_id=tx.chain_id,
                     )
+
+            if context.simulate:
+                await self._simulate_transaction(tx)
 
             # If we have a pre-signed transaction, submit it
             if signed_tx:

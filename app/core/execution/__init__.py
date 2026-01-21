@@ -57,6 +57,11 @@ from .executor import (
     TransactionSubmitError,
     TransactionRevertError,
     TransactionTimeoutError,
+    PolicyRequiredError,
+    SessionKeyRequiredError,
+    PolicyViolationError,
+    ApprovalRequiredError,
+    SignatureRequiredError,
     get_transaction_executor,
 )
 
@@ -92,6 +97,11 @@ __all__ = [
     "TransactionSubmitError",
     "TransactionRevertError",
     "TransactionTimeoutError",
+    "PolicyRequiredError",
+    "SessionKeyRequiredError",
+    "PolicyViolationError",
+    "ApprovalRequiredError",
+    "SignatureRequiredError",
     "get_transaction_executor",
     # Solana Executor
     "SolanaExecutor",

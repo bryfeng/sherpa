@@ -418,6 +418,122 @@ class CopyTradingManager:
 
         return stats
 
+    async def get_pending_approvals(
+        self,
+        user_id: str,
+    ) -> List[CopyExecution]:
+        """Get all executions pending user approval."""
+        if not self.convex_client:
+            return []
+
+        try:
+            data = await self.convex_client.query(
+                "copyTrading:listPendingApprovals",
+                {"userId": user_id},
+            )
+            return [self._dict_to_execution(d) for d in data]
+        except Exception as e:
+            logger.error(f"Failed to load pending approvals: {e}")
+            return []
+
+    async def approve_execution(
+        self,
+        execution_id: str,
+        user_id: str,
+    ) -> CopyExecution:
+        """
+        Approve and execute a pending copy trade.
+
+        Args:
+            execution_id: ID of the execution to approve
+            user_id: User approving (for authorization)
+
+        Returns:
+            Updated execution
+        """
+        # Load execution
+        execution = await self._load_execution(execution_id)
+        if not execution:
+            raise ValueError(f"Execution {execution_id} not found")
+
+        # Check status
+        if execution.status != CopyExecutionStatus.PENDING_APPROVAL:
+            raise ValueError(
+                f"Execution is not pending approval (status: {execution.status})"
+            )
+
+        # Load relationship
+        relationship = await self.get_relationship_async(execution.relationship_id)
+        if not relationship:
+            raise ValueError(f"Relationship {execution.relationship_id} not found")
+
+        # Verify user owns this relationship
+        if relationship.user_id != user_id:
+            raise ValueError("User not authorized to approve this execution")
+
+        # Check if trade is too old
+        config = relationship.config
+        age_seconds = (datetime.now(timezone.utc) - execution.signal.timestamp).total_seconds()
+        if age_seconds > config.max_delay_seconds:
+            execution.status = CopyExecutionStatus.EXPIRED
+            execution.error_message = f"Trade expired after {age_seconds:.0f}s (max: {config.max_delay_seconds}s)"
+            await self._save_execution(execution)
+            return execution
+
+        # Execute the trade
+        return await self._execute_copy(execution, relationship)
+
+    async def reject_execution(
+        self,
+        execution_id: str,
+        user_id: str,
+        reason: Optional[str] = None,
+    ) -> CopyExecution:
+        """
+        Reject/cancel a pending copy trade.
+
+        Args:
+            execution_id: ID of the execution to reject
+            user_id: User rejecting (for authorization)
+            reason: Optional rejection reason
+
+        Returns:
+            Updated execution
+        """
+        # Load execution
+        execution = await self._load_execution(execution_id)
+        if not execution:
+            raise ValueError(f"Execution {execution_id} not found")
+
+        # Check status
+        if execution.status != CopyExecutionStatus.PENDING_APPROVAL:
+            raise ValueError(
+                f"Execution is not pending approval (status: {execution.status})"
+            )
+
+        # Load relationship to verify authorization
+        relationship = await self.get_relationship_async(execution.relationship_id)
+        if not relationship:
+            raise ValueError(f"Relationship {execution.relationship_id} not found")
+
+        if relationship.user_id != user_id:
+            raise ValueError("User not authorized to reject this execution")
+
+        # Update status
+        execution.status = CopyExecutionStatus.CANCELLED
+        execution.error_message = reason or "Rejected by user"
+        execution.execution_completed_at = datetime.now(timezone.utc)
+
+        # Update relationship stats
+        relationship.record_trade(success=False, volume_usd=Decimal("0"), skipped=True)
+
+        await self._save_execution(execution)
+        await self._save_relationship(relationship)
+
+        logger.info(f"Rejected execution {execution_id}: {reason}")
+
+        return execution
+
     # =========================================================================
     # Signal Processing
     # =========================================================================
@@ -536,19 +652,28 @@ class CopyTradingManager:
 
         execution.calculated_size_usd = size_usd
 
-        # Apply delay if configured
-        if config.delay_seconds > 0:
-            execution.status = CopyExecutionStatus.QUEUED
-            await self._save_execution(execution)
+        # Check if session key is configured (autonomous mode)
+        if config.session_key_id:
+            # Apply delay if configured
+            if config.delay_seconds > 0:
+                execution.status = CopyExecutionStatus.QUEUED
+                await self._save_execution(execution)
 
-            # Schedule delayed execution
-            asyncio.create_task(
-                self._delayed_execute(execution, relationship, config.delay_seconds)
-            )
-            return execution
+                # Schedule delayed execution
+                asyncio.create_task(
+                    self._delayed_execute(execution, relationship, config.delay_seconds)
+                )
+                return execution
 
-        # Execute immediately
-        return await self._execute_copy(execution, relationship)
+            # Execute immediately (autonomous mode with session key)
+            return await self._execute_copy(execution, relationship)
+
+        # Manual approval flow - set to PENDING_APPROVAL and notify user
+        execution.status = CopyExecutionStatus.PENDING_APPROVAL
+        await self._save_execution(execution)
+        await self._notify_pending_approval(execution, relationship)
+
+        return execution
 
     async def _delayed_execute(
         self,
@@ -705,6 +830,22 @@ class CopyTradingManager:
         """Register callback for failed copy trades."""
         self._on_copy_failed.append(callback)
 
+    def on_pending_approval(self, callback: Callable):
+        """Register callback for trades pending user approval."""
+        if not hasattr(self, "_on_pending_approval"):
+            self._on_pending_approval = []
+        self._on_pending_approval.append(callback)
+
+    async def _notify_pending_approval(self, execution: CopyExecution, relationship: CopyRelationship):
+        """Notify listeners of trade pending approval."""
+        if not hasattr(self, "_on_pending_approval"):
+            self._on_pending_approval = []
+        for cb in self._on_pending_approval:
+            try:
+                await cb(execution, relationship)
+            except Exception as e:
+                logger.error(f"Callback error: {e}")
+
     async def _notify_executed(self, execution: CopyExecution, relationship: CopyRelationship):
         """Notify listeners of successful execution."""
         for cb in self._on_copy_executed:
@@ -804,11 +945,28 @@ class CopyTradingManager:
         if self.convex_client:
             try:
                 await self.convex_client.mutation(
-                    "copyTrading:insertExecution",
+                    "copyTrading:upsertExecution",
                     self._execution_to_dict(execution),
                 )
             except Exception as e:
                 logger.error(f"Failed to save execution: {e}")
+
+    async def _load_execution(self, execution_id: str) -> Optional[CopyExecution]:
+        """Load execution from storage."""
+        if not self.convex_client:
+            return None
+
+        try:
+            data = await self.convex_client.query(
+                "copyTrading:getExecution",
+                {"id": execution_id},
+            )
+            if data:
+                return self._dict_to_execution(data)
+        except Exception as e:
+            logger.error(f"Failed to load execution: {e}")
+
+        return None
 
     async def _get_session_key(self, session_key_id: str) -> Optional[SessionKey]:
         """Get a session key by ID."""
