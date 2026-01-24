@@ -69,6 +69,11 @@ from .session_manager import (
     LimitExceededError,
     get_session_manager,
 )
+from .swig_session import (
+    SwigSessionAuthorityManager,
+    SwigSessionConfig,
+    SwigSessionError,
+)
 
 __all__ = [
     # Models
@@ -90,4 +95,7 @@ __all__ = [
     "PermissionDeniedError",
     "LimitExceededError",
     "get_session_manager",
+    "SwigSessionAuthorityManager",
+    "SwigSessionConfig",
+    "SwigSessionError",
 ]

@@ -20,9 +20,15 @@ import httpx
 
 from app.config import settings
 from app.db.convex_client import get_convex_client, ConvexClient
-from app.core.policy import ActionContext, PolicyEngine, RiskPolicyConfig, SystemPolicyConfig
+from app.core.policy import (
+    ActionContext,
+    FeePolicyConfig,
+    PolicyEngine,
+    RiskPolicyConfig,
+    SystemPolicyConfig,
+)
 from app.core.recovery import RecoveryExecutor
-from app.core.wallet.models import SessionKey
+from app.core.wallet.models import SessionKey, Permission
 
 from .models import (
     PreparedTransaction,
@@ -34,6 +40,9 @@ from .models import (
     BridgeQuote,
     ExecutionContext,
 )
+from .erc4337_executor import UserOpExecutor, UserOpExecutionError
+from .userop import UserOperation
+from .userop_builder import build_entrypoint_get_nonce_call, build_execute_call_data
 from .nonce_manager import NonceManager, get_nonce_manager
 from .tx_builder import TransactionBuilder
 
@@ -125,11 +134,14 @@ class TransactionExecutor:
         nonce_manager: Optional[NonceManager] = None,
         convex: Optional[ConvexClient] = None,
         rpc_urls: Optional[Dict[int, str]] = None,
+        session_manager: Optional[Any] = None,
     ):
         self.nonce_manager = nonce_manager or get_nonce_manager()
         self.convex = convex or get_convex_client()
+        self._session_manager = session_manager
         self._client = httpx.AsyncClient(timeout=60.0)
         self._recovery = RecoveryExecutor()
+        self._userop_executor = UserOpExecutor()
 
         # RPC URLs per chain
         self._rpc_urls = rpc_urls or {
@@ -196,6 +208,54 @@ class TransactionExecutor:
     def _encode_address(address: str) -> str:
         addr = address.lower().replace("0x", "")
         return addr.zfill(64)
+
+    async def _get_userop_nonce(self, chain_id: int, sender: str, key: int = 0) -> int:
+        if not settings.erc4337_entrypoint_address:
+            raise ExecutionError("EntryPoint address not configured for ERC-4337")
+
+        data = build_entrypoint_get_nonce_call(sender, key)
+        result = await self._rpc_call(
+            chain_id,
+            "eth_call",
+            [
+                {
+                    "to": settings.erc4337_entrypoint_address,
+                    "data": data,
+                },
+                "latest",
+            ],
+        )
+        if not isinstance(result, str):
+            raise ExecutionError("Invalid EntryPoint nonce response")
+        return int(result, 16)
+
+    async def _record_session_usage(
+        self,
+        *,
+        context: ExecutionContext,
+        action: Permission,
+        value_usd: float,
+        tx_hash: Optional[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not context.session_key_id:
+            return
+
+        if self._session_manager is None:
+            from app.core.wallet import SessionKeyManager
+
+            self._session_manager = SessionKeyManager(convex=self.convex)
+
+        try:
+            await self._session_manager.record_usage(
+                session_id=context.session_key_id,
+                action_type=action,
+                value_usd=Decimal(str(value_usd)),
+                tx_hash=tx_hash,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to record session key usage: {exc}")
 
     def _is_native_token(self, token_address: Optional[str]) -> bool:
         if not token_address:
@@ -327,6 +387,15 @@ class TransactionExecutor:
             max_single_tx_usd=Decimal(str(data.get("maxSingleTxUsd", "100000"))),
         )
 
+    async def _get_fee_policy_config(self, chain_id: int) -> FeePolicyConfig:
+        data = await self.convex.query(
+            "feeConfig:getByChainId",
+            {"chainId": chain_id},
+        )
+        if not data:
+            return FeePolicyConfig.missing_for_chain(chain_id)
+        return FeePolicyConfig.from_dict(data)
+
     async def _get_session_key(self, session_key_id: str) -> SessionKey:
         session_data = await self.convex.query(
             "sessionKeys:get",
@@ -349,7 +418,7 @@ class TransactionExecutor:
         slippage_percent: Optional[float] = None,
         estimated_gas_usd: Optional[float] = None,
     ) -> None:
-        if not context.require_policy and not context.require_session_key:
+        if not context.require_policy and not context.require_session_key and not context.require_fee_policy:
             return
 
         risk_config: Optional[RiskPolicyConfig] = None
@@ -357,6 +426,11 @@ class TransactionExecutor:
             risk_config = await self._get_risk_policy_config(context.wallet_address)
 
         system_config = await self._get_system_policy_config()
+        fee_config: Optional[FeePolicyConfig] = None
+        require_fee_policy = context.require_fee_policy or context.require_session_key
+        if require_fee_policy:
+            chain_id_value = chain_id or context.chain_id
+            fee_config = await self._get_fee_policy_config(chain_id_value)
 
         session_key: Optional[SessionKey] = None
         if context.require_session_key:
@@ -381,6 +455,7 @@ class TransactionExecutor:
             session_key=session_key,
             risk_config=risk_config,
             system_config=system_config,
+            fee_config=fee_config,
         ).evaluate(action_context)
 
         if not result.approved:
@@ -525,6 +600,14 @@ class TransactionExecutor:
 
             # Update database
             await self._update_db_transaction(db_tx_id, result)
+            if result.status in (TransactionStatus.SUBMITTED, TransactionStatus.CONFIRMED):
+                await self._record_session_usage(
+                    context=context,
+                    action=Permission.SWAP,
+                    value_usd=quote.value_in_usd,
+                    tx_hash=result.tx_hash,
+                    metadata={"quoteId": quote.request_id},
+                )
             return result
 
         except Exception as e:
@@ -602,6 +685,14 @@ class TransactionExecutor:
 
             # Update database
             await self._update_db_transaction(db_tx_id, result)
+            if result.status in (TransactionStatus.SUBMITTED, TransactionStatus.CONFIRMED):
+                await self._record_session_usage(
+                    context=context,
+                    action=Permission.BRIDGE,
+                    value_usd=quote.value_in_usd,
+                    tx_hash=result.tx_hash,
+                    metadata={"quoteId": quote.request_id},
+                )
             return result
 
         except Exception as e:
@@ -677,6 +768,18 @@ class TransactionExecutor:
                 signed_tx=signed_tx,
             )
             await self._update_db_transaction(db_tx_id, result)
+            if result.status in (TransactionStatus.SUBMITTED, TransactionStatus.CONFIRMED):
+                await self._record_session_usage(
+                    context=context,
+                    action=Permission.APPROVE,
+                    value_usd=0.0,
+                    tx_hash=result.tx_hash,
+                    metadata={
+                        "token": token_address,
+                        "spender": spender_address,
+                        "amount": amount,
+                    },
+                )
             return result
         except Exception as e:
             await self._update_db_transaction(
@@ -703,6 +806,9 @@ class TransactionExecutor:
         the signing would happen on the client side (wallet) or via
         a secure key management system.
         """
+        if context.use_erc4337:
+            return await self._execute_userop(tx=tx, context=context, signed_tx=signed_tx)
+
         result = TransactionResult(
             tx_id=tx.tx_id,
             chain_id=tx.chain_id,
@@ -782,6 +888,93 @@ class TransactionExecutor:
             result.status = TransactionStatus.FAILED
             result.error = str(e)
             return result
+
+    async def _execute_userop(
+        self,
+        tx: PreparedTransaction,
+        context: ExecutionContext,
+        signed_tx: Optional[str] = None,
+    ) -> TransactionResult:
+        if not settings.enable_erc4337:
+            raise ExecutionError("ERC-4337 execution is disabled in settings")
+
+        sender = context.smart_wallet_address or context.wallet_address or tx.from_address
+        if not sender:
+            raise ExecutionError("Smart wallet address is required for ERC-4337 execution")
+
+        if not tx.gas_estimate:
+            tx.gas_estimate = await self.estimate_gas(tx, context)
+
+        max_fee_per_gas = (
+            tx.gas_estimate.max_fee_per_gas
+            if tx.gas_estimate.max_fee_per_gas is not None
+            else tx.gas_estimate.gas_price_wei
+        )
+        max_priority_fee_per_gas = tx.gas_estimate.max_priority_fee_per_gas or 0
+
+        nonce_key = context.user_op_nonce_key or 0
+        nonce = await self._get_userop_nonce(tx.chain_id, sender, nonce_key)
+
+        call_data = build_execute_call_data(
+            to_address=tx.to_address,
+            value_wei=tx.value,
+            data=tx.data,
+        )
+
+        user_op = UserOperation(
+            sender=sender,
+            nonce=nonce,
+            init_code="0x",
+            call_data=call_data,
+            call_gas_limit=0,
+            verification_gas_limit=0,
+            pre_verification_gas=0,
+            max_fee_per_gas=max_fee_per_gas,
+            max_priority_fee_per_gas=max_priority_fee_per_gas,
+            paymaster_and_data="0x",
+            signature="0x",
+        )
+
+        fee_config = await self._get_fee_policy_config(tx.chain_id)
+        try:
+            user_op = await self._userop_executor.sponsor_user_operation(user_op, fee_config)
+        except UserOpExecutionError as exc:
+            raise ExecutionError(f"Paymaster sponsorship failed: {exc}") from exc
+
+        try:
+            gas_estimate = await self._userop_executor.estimate_gas(user_op)
+        except UserOpExecutionError as exc:
+            raise ExecutionError(f"UserOp gas estimation failed: {exc}") from exc
+
+        user_op.call_gas_limit = gas_estimate.call_gas_limit
+        user_op.verification_gas_limit = gas_estimate.verification_gas_limit
+        user_op.pre_verification_gas = gas_estimate.pre_verification_gas
+
+        signature = context.user_op_signature or signed_tx
+        if not signature:
+            raise SignatureRequiredError("UserOperation signature required for ERC-4337 execution.")
+        user_op.signature = signature
+
+        result = TransactionResult(
+            tx_id=tx.tx_id,
+            chain_id=tx.chain_id,
+            status=TransactionStatus.PENDING,
+        )
+
+        if context.simulate:
+            return result
+
+        try:
+            send_result = await self._userop_executor.send_user_operation(user_op)
+        except UserOpExecutionError as exc:
+            result.status = TransactionStatus.FAILED
+            result.error = str(exc)
+            return result
+
+        result.tx_hash = send_result.user_op_hash
+        result.status = TransactionStatus.SUBMITTED
+        result.submitted_at = datetime.utcnow()
+        return result
 
     async def _submit_raw_transaction(
         self,

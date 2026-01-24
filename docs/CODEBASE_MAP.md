@@ -20,7 +20,7 @@ graph TB
 
     subgraph API["FastAPI Backend"]
         Router[API Routes]
-        Auth[SIWE Auth]
+        Auth[Wallet Auth]
         RateLimit[Rate Limiter]
     end
 
@@ -77,7 +77,7 @@ backend/
 │   ├── cache.py                  # In-memory TTL cache
 │   │
 │   ├── api/                      # FastAPI route handlers
-│   │   ├── auth.py               # SIWE authentication endpoints
+│   │   ├── auth.py               # Wallet authentication endpoints
 │   │   ├── chat.py               # Chat endpoints (streaming/non-streaming)
 │   │   ├── conversations.py      # Conversation history CRUD
 │   │   ├── copy_trading.py       # Copy trading management
@@ -102,8 +102,9 @@ backend/
 │   │       └── execution_poller.py # Strategy approval polling
 │   │
 │   ├── auth/                     # Authentication system
-│   │   ├── service.py            # SIWE + JWT management
+│   │   ├── service.py            # Wallet sign-in + JWT management
 │   │   ├── models.py             # Auth data models
+│   │   ├── solana_signin.py      # Solana sign-in parsing + signature checks
 │   │   └── middleware.py         # Auth dependencies
 │   │
 │   ├── core/                     # Business logic
@@ -263,7 +264,7 @@ backend/
 
 | File | Purpose | Key Routes |
 |------|---------|-----------|
-| `auth.py` | SIWE authentication | `/auth/nonce`, `/auth/verify`, `/auth/refresh` |
+| `auth.py` | Wallet authentication | `/auth/nonce`, `/auth/verify`, `/auth/refresh` |
 | `chat.py` | Conversational AI | `/chat`, `/chat/stream` |
 | `conversations.py` | History management | `/conversations/*` |
 | `copy_trading.py` | Copy trading CRUD | `/copy-trading/*` |
@@ -482,7 +483,7 @@ sequenceDiagram
 
 ```
 1. POST /auth/nonce → Generate nonce (10 min TTL)
-2. Client signs SIWE message with wallet
+2. Client signs wallet sign-in message with wallet (EVM SIWE or Solana sign-in)
 3. POST /auth/verify → Verify signature, create JWT session
 4. Bearer token in subsequent requests
 5. POST /auth/refresh → Rotate tokens (7 day refresh)

@@ -1,5 +1,5 @@
 """
-Authentication service using SIWE (Sign In With Ethereum).
+Authentication service using wallet sign-in (EVM SIWE + Solana sign-in).
 """
 
 import secrets
@@ -11,6 +11,7 @@ from siwe import SiweMessage, VerificationError
 
 from app.config import settings
 from app.db.convex_client import ConvexClient, get_convex_client
+from app.services.address import normalize_chain
 
 from .models import (
     AuthSession,
@@ -22,6 +23,7 @@ from .models import (
     Scope,
     TokenPayload,
 )
+from .solana_signin import parse_solana_signin_message, verify_solana_signature
 
 
 # JWT configuration - MUST be set in production
@@ -39,12 +41,16 @@ NONCE_EXPIRE_MINUTES = 10
 
 class AuthService:
     """
-    Authentication service using SIWE (Sign In With Ethereum).
+    Authentication service using wallet sign-in.
+
+    Supports:
+    - EVM wallets via SIWE (Sign-In With Ethereum)
+    - Solana wallets via Sign-In with Solana message format
 
     Flow:
-    1. Client requests nonce via GET /auth/nonce
+    1. Client requests nonce via POST /auth/nonce
     2. Client signs message with wallet
-    3. Client sends message + signature to POST /auth/verify
+    3. Client sends message + signature + chain to POST /auth/verify
     4. Server verifies and returns JWT tokens
     5. Client uses access token for authenticated requests
     6. Client refreshes token via POST /auth/refresh
@@ -53,12 +59,14 @@ class AuthService:
     def __init__(self, convex: Optional[ConvexClient] = None):
         self.convex = convex or get_convex_client()
 
-    async def generate_nonce(self, wallet_address: str) -> dict:
+    async def generate_nonce(self, wallet_address: str, chain: Optional[str] = None) -> dict:
         """
-        Generate a unique nonce for SIWE authentication.
+        Generate a unique nonce for wallet sign-in.
 
         The nonce is stored in Convex and expires after 10 minutes.
         """
+        chain_slug = normalize_chain(chain) if chain else None
+        normalized_address = self._normalize_wallet_address(wallet_address, chain_slug)
         nonce = secrets.token_urlsafe(32)
         expires_at = datetime.utcnow() + timedelta(minutes=NONCE_EXPIRE_MINUTES)
 
@@ -66,7 +74,7 @@ class AuthService:
         await self.convex.mutation(
             "auth:createNonce",
             {
-                "walletAddress": wallet_address.lower(),
+                "walletAddress": normalized_address,
                 "nonce": nonce,
                 "expiresAt": int(expires_at.timestamp() * 1000),
             },
@@ -81,32 +89,15 @@ class AuthService:
         self,
         message: str,
         signature: str,
+        chain: Optional[str] = None,
     ) -> VerifiedWallet:
         """
-        Verify a SIWE signature and return the verified wallet.
+        Verify a wallet signature and return the verified wallet.
         """
-        try:
-            siwe_message = SiweMessage.from_message(message)
-            siwe_message.verify(signature)
-
-            # Verify nonce exists and hasn't expired
-            nonce_valid = await self._verify_nonce(
-                siwe_message.address,
-                siwe_message.nonce,
-            )
-            if not nonce_valid:
-                raise InvalidNonceError("Nonce is invalid or expired")
-
-            # Invalidate the nonce after use
-            await self._invalidate_nonce(siwe_message.address, siwe_message.nonce)
-
-            return VerifiedWallet(
-                address=siwe_message.address.lower(),
-                chain_id=siwe_message.chain_id,
-            )
-
-        except VerificationError as e:
-            raise InvalidSignatureError(f"Signature verification failed: {e}")
+        chain_slug = normalize_chain(chain) if chain else None
+        if chain_slug == "solana":
+            return await self._verify_solana_signature(message, signature)
+        return await self._verify_evm_signature(message, signature)
 
     async def create_session(
         self,
@@ -119,9 +110,10 @@ class AuthService:
         This also creates/gets the user and wallet in Convex.
         """
         # Get or create user in Convex
+        chain_slug = self._chain_slug_from_id(wallet.chain_id)
         result = await self.convex.get_or_create_user(
             address=wallet.address,
-            chain="ethereum" if wallet.chain_id == 1 else f"chain:{wallet.chain_id}",
+            chain=chain_slug,
         )
 
         user_id = result.get("user", {}).get("_id")
@@ -286,7 +278,7 @@ class AuthService:
         self,
         wallet_address: str,
         session_id: str,
-        chain_id: int,
+        chain_id: int | str,
         user_id: Optional[str],
         wallet_id: Optional[str],
         scopes: list,
@@ -327,7 +319,7 @@ class AuthService:
         result = await self.convex.query(
             "auth:verifyNonce",
             {
-                "walletAddress": wallet_address.lower(),
+                "walletAddress": wallet_address,
                 "nonce": nonce,
             },
         )
@@ -338,10 +330,87 @@ class AuthService:
         await self.convex.mutation(
             "auth:deleteNonce",
             {
-                "walletAddress": wallet_address.lower(),
+                "walletAddress": wallet_address,
                 "nonce": nonce,
             },
         )
+
+    async def _verify_evm_signature(
+        self,
+        message: str,
+        signature: str,
+    ) -> VerifiedWallet:
+        try:
+            siwe_message = SiweMessage.from_message(message)
+            siwe_message.verify(signature)
+
+            normalized_address = self._normalize_wallet_address(
+                siwe_message.address,
+                "ethereum",
+            )
+
+            nonce_valid = await self._verify_nonce(
+                normalized_address,
+                siwe_message.nonce,
+            )
+            if not nonce_valid:
+                raise InvalidNonceError("Nonce is invalid or expired")
+
+            await self._invalidate_nonce(normalized_address, siwe_message.nonce)
+
+            return VerifiedWallet(
+                address=normalized_address,
+                chain_id=siwe_message.chain_id,
+            )
+
+        except VerificationError as e:
+            raise InvalidSignatureError(f"Signature verification failed: {e}")
+
+    async def _verify_solana_signature(
+        self,
+        message: str,
+        signature: str,
+    ) -> VerifiedWallet:
+        try:
+            parsed = parse_solana_signin_message(message)
+        except ValueError as e:
+            raise InvalidSignatureError(str(e))
+        normalized_address = self._normalize_wallet_address(parsed.address, "solana")
+        try:
+            verify_solana_signature(message, signature, normalized_address)
+        except ValueError as e:
+            raise InvalidSignatureError(str(e))
+
+        nonce_valid = await self._verify_nonce(normalized_address, parsed.nonce)
+        if not nonce_valid:
+            raise InvalidNonceError("Nonce is invalid or expired")
+
+        await self._invalidate_nonce(normalized_address, parsed.nonce)
+
+        return VerifiedWallet(
+            address=normalized_address,
+            chain_id="solana",
+        )
+
+    def _normalize_wallet_address(self, address: str, chain_slug: Optional[str]) -> str:
+        if not address:
+            return address
+        if chain_slug == "solana":
+            return address
+        if chain_slug:
+            return address.lower()
+        if address.startswith("0x"):
+            return address.lower()
+        return address
+
+    def _chain_slug_from_id(self, chain_id: int | str) -> str:
+        if isinstance(chain_id, str):
+            if chain_id.lower() == "solana":
+                return "solana"
+            return chain_id
+        if chain_id == 1:
+            return "ethereum"
+        return f"chain:{chain_id}"
 
 
 # Singleton instance

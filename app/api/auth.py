@@ -28,10 +28,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class NonceRequest(BaseModel):
     """Request for nonce generation."""
     wallet_address: str
+    chain: Optional[str] = None
 
 
 class NonceResponse(BaseModel):
-    """Response with nonce for SIWE."""
+    """Response with nonce for wallet sign-in."""
     nonce: str
     expires_at: str
 
@@ -42,7 +43,7 @@ class AuthResponse(BaseModel):
     refresh_token: str
     expires_at: str
     wallet_address: str
-    chain_id: int
+    chain_id: int | str
     user_id: Optional[str] = None
     wallet_id: Optional[str] = None
     scopes: list[str]
@@ -51,7 +52,7 @@ class AuthResponse(BaseModel):
 class SessionInfo(BaseModel):
     """Current session info."""
     wallet_address: str
-    chain_id: int
+    chain_id: int | str
     user_id: Optional[str] = None
     wallet_id: Optional[str] = None
     scopes: list[str]
@@ -63,12 +64,12 @@ async def get_nonce(
     auth_service: AuthService = Depends(get_auth_service),
 ):
     """
-    Generate a nonce for SIWE authentication.
+    Generate a nonce for wallet sign-in.
 
-    The client should use this nonce when creating the SIWE message.
+    The client should use this nonce when creating the wallet sign-in message.
     Nonce expires after 10 minutes.
     """
-    result = await auth_service.generate_nonce(request.wallet_address)
+    result = await auth_service.generate_nonce(request.wallet_address, request.chain)
     return NonceResponse(
         nonce=result["nonce"],
         expires_at=result["expires_at"],
@@ -81,12 +82,12 @@ async def verify_signature(
     auth_service: AuthService = Depends(get_auth_service),
 ):
     """
-    Verify a SIWE signature and create a session.
+    Verify a wallet signature and create a session.
 
     The client should:
-    1. Create a SIWE message with the nonce from /auth/nonce
+    1. Create a wallet sign-in message with the nonce from /auth/nonce
     2. Sign the message with the wallet
-    3. Send the message and signature here
+    3. Send the message, signature, and chain here
 
     Returns JWT tokens for authenticated requests.
     """
@@ -95,6 +96,7 @@ async def verify_signature(
         wallet = await auth_service.verify_signature(
             message=request.message,
             signature=request.signature,
+            chain=request.chain,
         )
 
         # Create a session

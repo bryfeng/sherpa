@@ -4,7 +4,7 @@ Authentication models and exceptions.
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional, List
+from typing import Optional, List, Union
 from pydantic import BaseModel, Field
 
 
@@ -19,7 +19,7 @@ class SessionExpiredError(AuthError):
 
 
 class InvalidSignatureError(AuthError):
-    """SIWE signature is invalid."""
+    """Wallet signature is invalid."""
     pass
 
 
@@ -38,16 +38,16 @@ class Scope(str, Enum):
 
 
 class VerifiedWallet(BaseModel):
-    """Wallet verified via SIWE signature."""
+    """Wallet verified via wallet sign-in signature."""
     address: str
-    chain_id: int
+    chain_id: Union[int, str]
 
 
 class AuthSession(BaseModel):
     """Authenticated session."""
     session_id: str
     wallet_address: str
-    chain_id: int
+    chain_id: Union[int, str]
     user_id: Optional[str] = None
     wallet_id: Optional[str] = None
     access_token: str
@@ -66,9 +66,10 @@ class NonceResponse(BaseModel):
 
 
 class VerifyRequest(BaseModel):
-    """Request to verify SIWE signature."""
+    """Request to verify a wallet signature."""
     message: str
     signature: str
+    chain: Optional[str] = None
 
 
 class RefreshRequest(BaseModel):
@@ -80,7 +81,7 @@ class TokenPayload(BaseModel):
     """JWT token payload."""
     sub: str  # wallet address
     session_id: str
-    chain_id: int
+    chain_id: Union[int, str]
     user_id: Optional[str] = None
     wallet_id: Optional[str] = None
     scopes: List[str] = Field(default_factory=list)

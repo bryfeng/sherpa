@@ -16,6 +16,7 @@ class PolicyType(str, Enum):
     SESSION = "session"      # Session key constraints
     RISK = "risk"            # User risk preferences
     SYSTEM = "system"        # Platform-wide rules
+    FEE = "fee"              # Fee policy (gas abstraction / paymaster)
 
 
 class ViolationSeverity(str, Enum):
@@ -240,6 +241,58 @@ class RiskPolicyConfig:
             check_gas=data.get("checkGas", True),
             check_liquidity=data.get("checkLiquidity", False),
         )
+
+
+# =============================================================================
+# Fee Policy Configuration
+# =============================================================================
+
+@dataclass
+class FeePolicyConfig:
+    """
+    Fee policy settings for gas abstraction and paymaster routing.
+
+    Stored in Convex feeConfigs table and evaluated before autonomous execution.
+    """
+    chain_id: Any
+    stablecoin_symbol: str = "USDC"
+    stablecoin_address: Optional[str] = None
+    stablecoin_decimals: int = 6
+    allow_native_fallback: bool = False
+    native_symbol: str = "ETH"
+    native_decimals: int = 18
+    fee_asset_order: List[str] = field(default_factory=lambda: ["stablecoin"])
+    reimbursement_mode: str = "none"  # per_tx | batch | none
+    is_enabled: bool = False
+    updated_at: Optional[datetime] = None
+    updated_by: Optional[str] = None
+    missing: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "FeePolicyConfig":
+        chain_id = data.get("chainId")
+        stablecoin_address = data.get("stablecoinAddress")
+        if isinstance(chain_id, int) and stablecoin_address:
+            stablecoin_address = stablecoin_address.lower()
+        return cls(
+            chain_id=chain_id,
+            stablecoin_symbol=data.get("stablecoinSymbol", "USDC"),
+            stablecoin_address=stablecoin_address,
+            stablecoin_decimals=data.get("stablecoinDecimals", 6),
+            allow_native_fallback=data.get("allowNativeFallback", False),
+            native_symbol=data.get("nativeSymbol", "ETH"),
+            native_decimals=data.get("nativeDecimals", 18),
+            fee_asset_order=data.get("feeAssetOrder", ["stablecoin"]),
+            reimbursement_mode=data.get("reimbursementMode", "none"),
+            is_enabled=data.get("isEnabled", False),
+            updated_at=datetime.fromtimestamp(data.get("updatedAt") / 1000) if data.get("updatedAt") else None,
+            updated_by=data.get("updatedBy"),
+            missing=False,
+        )
+
+    @classmethod
+    def missing_for_chain(cls, chain_id: Any) -> "FeePolicyConfig":
+        return cls(chain_id=chain_id, is_enabled=False, missing=True)
 
 
 # =============================================================================

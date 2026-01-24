@@ -44,6 +44,7 @@ class DCAService:
         gas_provider: Any = None,
         session_manager: Any = None,
         policy_engine: Any = None,
+        tx_executor: Any = None,
     ):
         """
         Initialize DCA service.
@@ -55,6 +56,7 @@ class DCAService:
             gas_provider: Optional gas price provider
             session_manager: Optional session key manager
             policy_engine: Optional policy engine
+            tx_executor: Optional transaction executor
         """
         self._convex = convex_client
         self._swap = swap_provider
@@ -62,6 +64,7 @@ class DCAService:
         self._gas = gas_provider
         self._sessions = session_manager
         self._policy = policy_engine
+        self._tx_executor = tx_executor
 
         # Create executor if we have required providers
         self._executor = None
@@ -73,6 +76,7 @@ class DCAService:
                 gas_provider=gas_provider,
                 session_manager=session_manager,
                 policy_engine=policy_engine,
+                tx_executor=tx_executor,
             )
 
     # =========================================================================

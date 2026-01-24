@@ -246,4 +246,9 @@ class ExecutionContext:
     session_key_id: Optional[str] = None
     require_policy: bool = True
     require_session_key: bool = True
+    require_fee_policy: bool = False
+    use_erc4337: bool = False
+    smart_wallet_address: Optional[str] = None
+    user_op_signature: Optional[str] = None
+    user_op_nonce_key: Optional[int] = None
     simulate: bool = True

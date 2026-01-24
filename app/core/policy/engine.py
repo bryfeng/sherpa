@@ -12,6 +12,7 @@ from typing import Optional
 from ..wallet.models import SessionKey
 from .models import (
     ActionContext,
+    FeePolicyConfig,
     PolicyResult,
     PolicyViolation,
     RiskLevel,
@@ -19,6 +20,7 @@ from .models import (
     SystemPolicyConfig,
     ViolationSeverity,
 )
+from .fee_policy import FeePolicy
 from .risk_policy import RiskPolicy
 from .session_policy import SessionPolicy
 from .system_policy import SystemPolicy
@@ -30,8 +32,9 @@ class PolicyEngine:
 
     Evaluates actions against all policy layers:
     1. System Policy - Platform-wide rules (checked first)
-    2. Session Policy - Session key constraints
-    3. Risk Policy - User risk preferences
+    2. Fee Policy - Gas abstraction and paymaster rules
+    3. Session Policy - Session key constraints
+    4. Risk Policy - User risk preferences
 
     Each layer can block or warn about actions.
     """
@@ -41,6 +44,7 @@ class PolicyEngine:
         session_key: Optional[SessionKey] = None,
         risk_config: Optional[RiskPolicyConfig] = None,
         system_config: Optional[SystemPolicyConfig] = None,
+        fee_config: Optional[FeePolicyConfig] = None,
     ):
         """
         Initialize the policy engine.
@@ -49,10 +53,12 @@ class PolicyEngine:
             session_key: The session key to validate against (optional)
             risk_config: User risk preferences (defaults to sensible values)
             system_config: Platform system config (defaults to permissive)
+            fee_config: Fee policy config for gas abstraction (optional)
         """
         self.session_policy = SessionPolicy(session_key) if session_key else None
         self.risk_policy = RiskPolicy(risk_config or RiskPolicyConfig())
         self.system_policy = SystemPolicy(system_config or SystemPolicyConfig())
+        self.fee_policy = FeePolicy(fee_config) if fee_config else None
 
     def evaluate(self, context: ActionContext) -> PolicyResult:
         """
@@ -62,8 +68,9 @@ class PolicyEngine:
 
         Evaluation order:
         1. System policy (platform-wide blocks)
-        2. Session policy (session key constraints)
-        3. Risk policy (user preferences)
+        2. Fee policy (gas abstraction rules)
+        3. Session policy (session key constraints)
+        4. Risk policy (user preferences)
         """
         start_time = time.perf_counter()
 
@@ -83,7 +90,20 @@ class PolicyEngine:
                 start_time,
             )
 
-        # 2. Session policy (if session key provided)
+        # 2. Fee policy (if fee config provided)
+        if self.fee_policy:
+            fee_violations = self.fee_policy.evaluate(context)
+            self._categorize_violations(fee_violations, all_violations, all_warnings)
+
+            if any(v.severity == ViolationSeverity.BLOCK for v in fee_violations):
+                return self._build_result(
+                    all_violations,
+                    all_warnings,
+                    context,
+                    start_time,
+                )
+
+        # 3. Session policy (if session key provided)
         if self.session_policy:
             session_violations = self.session_policy.evaluate(context)
             self._categorize_violations(session_violations, all_violations, all_warnings)
@@ -97,7 +117,7 @@ class PolicyEngine:
                     start_time,
                 )
 
-        # 3. Risk policy (user preferences)
+        # 4. Risk policy (user preferences)
         risk_violations = self.risk_policy.evaluate(context)
         self._categorize_violations(risk_violations, all_violations, all_warnings)
 
@@ -171,6 +191,7 @@ async def evaluate_action(
     session_key: Optional[SessionKey] = None,
     risk_config: Optional[RiskPolicyConfig] = None,
     system_config: Optional[SystemPolicyConfig] = None,
+    fee_config: Optional[FeePolicyConfig] = None,
 ) -> PolicyResult:
     """
     Evaluate an action against all policies.
@@ -182,5 +203,6 @@ async def evaluate_action(
         session_key=session_key,
         risk_config=risk_config,
         system_config=system_config,
+        fee_config=fee_config,
     )
     return engine.evaluate(context)

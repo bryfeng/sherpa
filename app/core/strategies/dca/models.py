@@ -303,6 +303,7 @@ class ExecutionQuote:
     minimum_output_amount: Decimal
     price_impact_bps: int
     route: Optional[str] = None
+    raw_quote: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -311,6 +312,7 @@ class ExecutionQuote:
             "minimumOutputAmount": str(self.minimum_output_amount),
             "priceImpactBps": self.price_impact_bps,
             "route": self.route,
+            "rawQuote": self.raw_quote,
         }
 
 

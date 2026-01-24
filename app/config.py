@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     enable_gmx: bool = Field(default=True, description="Enable GMX v2 perps provider")
     enable_perennial: bool = Field(default=True, description="Enable Perennial perps provider")
     enable_cex_proxy: bool = Field(default=False, description="Enable centralized exchange proxy provider")
+    enable_erc4337: bool = Field(default=False, description="Enable ERC-4337 smart wallet execution")
 
     # Solana / Non-EVM Providers
     solana_helius_api_key: str = Field(
@@ -96,6 +97,43 @@ class Settings(BaseSettings):
     jupiter_cache_ttl_seconds: int = Field(
         default=3600,
         description="TTL for Jupiter token list cache (default: 1 hour)",
+    )
+
+    # ERC-4337 Providers
+    erc4337_bundler_url: str = Field(
+        default="",
+        description="ERC-4337 bundler RPC URL",
+    )
+    erc4337_paymaster_url: str = Field(
+        default="",
+        description="ERC-4337 paymaster RPC URL",
+    )
+    erc4337_paymaster_rpc_method: str = Field(
+        default="pm_sponsorUserOperation",
+        description="RPC method used to request paymaster sponsorship",
+    )
+    erc4337_entrypoint_address: str = Field(
+        default="",
+        description="ERC-4337 EntryPoint contract address",
+    )
+    erc4337_account_execute_signature: str = Field(
+        default="execute(address,uint256,bytes)",
+        description="Smart account execute function signature for callData encoding",
+    )
+    erc4337_account_execute_selector: str = Field(
+        default="",
+        description="Override execute function selector (0x....) if signature differs",
+    )
+
+    # Swig (Solana Smart Wallet)
+    enable_swig: bool = Field(default=False, description="Enable Swig smart wallet integration")
+    swig_base_url: str = Field(
+        default="",
+        description="Swig API base URL",
+    )
+    swig_api_key: str = Field(
+        default="",
+        description="Swig API key",
     )
     redis_url: str = Field(
         default="",

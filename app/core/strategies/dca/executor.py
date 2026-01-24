@@ -89,6 +89,7 @@ class DCAExecutor:
         self,
         strategy: DCAStrategy,
         dry_run: bool = False,
+        user_op_signature: Optional[str] = None,
     ) -> ExecutionResult:
         """
         Execute a single DCA buy.
@@ -175,7 +176,7 @@ class DCAExecutor:
                     next_execution_at=DCAScheduler.get_next_execution(config),
                 )
 
-            tx_result = await self._execute_swap(strategy, quote)
+            tx_result = await self._execute_swap(strategy, quote, user_op_signature=user_op_signature)
             if not tx_result.success:
                 return await self._fail_execution(
                     execution_id,
@@ -363,6 +364,7 @@ class DCAExecutor:
                 minimum_output_amount=min_output,
                 price_impact_bps=quote.get("priceImpactBps", 0),
                 route=quote.get("routeDescription"),
+                raw_quote=quote,
             )
 
         except Exception as e:
@@ -412,16 +414,16 @@ class DCAExecutor:
         quote: ExecutionQuote,
     ) -> Any:
         """Validate execution against policy engine."""
-        from app.core.policy import ActionContext, PolicyEngine
+        from app.core.policy import ActionContext
 
         context = ActionContext(
-            action_type="swap",
+            session_id=strategy.session_key_id or "dca",
             wallet_address=strategy.wallet_address,
+            action_type="swap",
             chain_id=strategy.config.from_token.chain_id,
-            value_usd=float(quote.input_amount),
-            from_token=strategy.config.from_token.symbol,
-            to_token=strategy.config.to_token.symbol,
-            session_key_id=strategy.session_key_id,
+            value_usd=Decimal(str(quote.input_amount)),
+            token_in=strategy.config.from_token.address,
+            token_out=strategy.config.to_token.address,
         )
 
         return await self._policy.evaluate(context)
@@ -430,6 +432,7 @@ class DCAExecutor:
         self,
         strategy: DCAStrategy,
         quote: ExecutionQuote,
+        user_op_signature: Optional[str] = None,
     ) -> "SwapResult":
         """Execute the actual swap transaction."""
         config = strategy.config
@@ -455,6 +458,59 @@ class DCAExecutor:
         if is_solana_chain(chain_id):
             # Solana: Build and execute via Jupiter + SolanaExecutor
             return await self._execute_solana_swap(strategy, quote)
+
+        try:
+            from app.core.execution import ExecutionContext, TransactionExecutor, TransactionStatus
+            from app.core.execution.relay_adapter import relay_quote_to_swap_quote
+        except Exception:
+            TransactionExecutor = None  # type: ignore
+            TransactionStatus = None  # type: ignore
+
+        if self._tx_executor and TransactionExecutor and isinstance(self._tx_executor, TransactionExecutor):
+            if not user_op_signature or not quote.raw_quote:
+                return SwapResult(
+                    success=False,
+                    error="UserOp signature and raw quote required for ERC-4337 execution",
+                )
+
+            swap_quote = relay_quote_to_swap_quote(
+                quote.raw_quote,
+                wallet_address=strategy.wallet_address,
+                chain_id=chain_id,
+                token_in_address=config.from_token.address,
+                token_in_symbol=config.from_token.symbol,
+                token_in_decimals=config.from_token.decimals,
+                token_out_address=config.to_token.address,
+                token_out_symbol=config.to_token.symbol,
+                token_out_decimals=config.to_token.decimals,
+                slippage_bps=config.max_slippage_bps,
+            )
+
+            context = ExecutionContext(
+                wallet_address=strategy.wallet_address,
+                chain_id=chain_id,
+                session_key_id=strategy.session_key_id,
+                require_policy=True,
+                require_session_key=True,
+                use_erc4337=True,
+                smart_wallet_address=strategy.wallet_address,
+                user_op_signature=user_op_signature,
+                simulate=False,
+            )
+
+            tx_result = await self._tx_executor.execute_swap(
+                quote=swap_quote,
+                context=context,
+                signed_tx=user_op_signature,
+            )
+
+            return SwapResult(
+                success=tx_result.status in (TransactionStatus.SUBMITTED, TransactionStatus.CONFIRMED),
+                tx_hash=tx_result.tx_hash,
+                input_amount=quote.input_amount,
+                output_amount=quote.expected_output_amount,
+                error=tx_result.error,
+            )
 
         # EVM: Build and execute swap transaction
         result = await self._tx_executor.execute_swap(

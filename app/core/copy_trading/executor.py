@@ -91,20 +91,24 @@ class CopyExecutor:
         jupiter_provider: Optional["JupiterSwapProvider"] = None,
         relay_provider: Optional["RelayProvider"] = None,
         session_key_service: Optional[Any] = None,
+        tx_executor: Optional[Any] = None,
     ):
         self.jupiter = jupiter_provider
         self.relay = relay_provider
         self.session_key_service = session_key_service
+        self.tx_executor = tx_executor
 
     @classmethod
     def create_with_providers(cls) -> "CopyExecutor":
         """Factory method to create executor with real providers."""
         from ...providers.jupiter import get_jupiter_swap_provider
         from ...providers.relay import RelayProvider
+        from ...core.execution import get_transaction_executor
 
         return cls(
             jupiter_provider=get_jupiter_swap_provider(),
             relay_provider=RelayProvider(),
+            tx_executor=get_transaction_executor(),
         )
 
     async def get_quote(
@@ -161,6 +165,7 @@ class CopyExecutor:
         follower_chain: str,
         max_slippage_bps: int = 100,
         session_key: Optional[SessionKey] = None,
+        user_op_signature: Optional[str] = None,
     ) -> ExecutionResult:
         """
         Execute a copy trade.
@@ -218,8 +223,62 @@ class CopyExecutor:
                     slippage_bps=max_slippage_bps,
                 )
 
-            # TODO: Autonomous execution with session key
-            # For now, still return for manual signing
+            # Autonomous execution via ERC-4337 (EVM only)
+            if (
+                user_op_signature
+                and quote.transaction_data
+                and quote.transaction_data.get("type") == "evm"
+                and self.tx_executor
+            ):
+                from ...config import settings
+                from ...core.execution import ExecutionContext, TransactionExecutor, TransactionStatus
+                from ...core.execution.relay_adapter import relay_quote_to_swap_quote
+
+                if settings.enable_erc4337 and isinstance(self.tx_executor, TransactionExecutor):
+                    chain_id = quote.transaction_data.get("chain_id")
+                    if chain_id is None:
+                        raise ValueError("Missing chain_id for ERC-4337 execution")
+                    swap_quote = relay_quote_to_swap_quote(
+                        quote.quote_response or {},
+                        wallet_address=follower_address,
+                        chain_id=chain_id,
+                        token_in_address=signal.token_in_address,
+                        token_in_symbol=signal.token_in_symbol,
+                        token_in_decimals=quote.transaction_data.get("token_in_decimals", 18),
+                        token_out_address=signal.token_out_address,
+                        token_out_symbol=signal.token_out_symbol,
+                        token_out_decimals=quote.transaction_data.get("token_out_decimals", 18),
+                        slippage_bps=max_slippage_bps,
+                    )
+
+                    context = ExecutionContext(
+                        wallet_address=follower_address,
+                        chain_id=chain_id,
+                        session_key_id=session_key.session_id,
+                        require_policy=True,
+                        require_session_key=True,
+                        use_erc4337=True,
+                        smart_wallet_address=follower_address,
+                        user_op_signature=user_op_signature,
+                        simulate=False,
+                    )
+
+                    tx_result = await self.tx_executor.execute_swap(
+                        quote=swap_quote,
+                        context=context,
+                        signed_tx=user_op_signature,
+                    )
+
+                    return ExecutionResult(
+                        success=tx_result.status in (TransactionStatus.SUBMITTED, TransactionStatus.CONFIRMED),
+                        tx_hash=tx_result.tx_hash,
+                        token_out_amount=quote.output_amount,
+                        actual_value_usd=size_usd,
+                        slippage_bps=max_slippage_bps,
+                        error_message=tx_result.error,
+                    )
+
+            # Otherwise, return unsigned transaction for manual signing
             logger.warning("Session key execution not yet implemented, returning for manual signing")
             return ExecutionResult(
                 success=True,
@@ -441,6 +500,8 @@ class CopyExecutor:
                 transaction_data={
                     "type": "evm",
                     "chain_id": chain_id,
+                    "token_in_decimals": input_decimals,
+                    "token_out_decimals": int(output_decimals),
                     "steps": steps,
                     "quote": quote,
                 },

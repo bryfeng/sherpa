@@ -199,10 +199,13 @@ python cli.py health
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/auth/nonce` | GET | Get SIWE nonce |
-| `/auth/verify` | POST | Verify SIWE signature |
+| `/auth/nonce` | POST | Get wallet sign-in nonce |
+| `/auth/verify` | POST | Verify wallet signature (EVM SIWE / Solana sign-in) |
 | `/auth/refresh` | POST | Refresh JWT token |
 | `/auth/logout` | POST | Logout user |
+
+Notes:
+- `/auth/verify` accepts a `chain` param (e.g., `"ethereum"` or `"solana"`) to select the wallet sign-in format.
 
 ### Health
 
@@ -255,7 +258,7 @@ sherpa/
 │   │   ├── swap.py           # Swap quotes
 │   │   ├── relay.py          # Bridge quotes
 │   │   ├── news.py           # News endpoints
-│   │   └── auth.py           # SIWE authentication
+│   │   └── auth.py           # Wallet authentication
 │   ├── core/
 │   │   ├── agent/            # AI agent system
 │   │   │   ├── base.py       # Agent orchestrator

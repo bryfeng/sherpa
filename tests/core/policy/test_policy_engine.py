@@ -9,6 +9,8 @@ from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 
 from app.core.policy import (
+    FeePolicy,
+    FeePolicyConfig,
     PolicyEngine,
     PolicyResult,
     PolicyType,
@@ -90,6 +92,23 @@ def expired_session_key(valid_session_key: SessionKey) -> SessionKey:
     valid_session_key.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
     valid_session_key.status = SessionKeyStatus.EXPIRED
     return valid_session_key
+
+
+@pytest.fixture
+def fee_policy_config() -> FeePolicyConfig:
+    """Valid fee policy config."""
+    return FeePolicyConfig(
+        chain_id=1,
+        stablecoin_symbol="USDC",
+        stablecoin_address="0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        stablecoin_decimals=6,
+        allow_native_fallback=True,
+        native_symbol="ETH",
+        native_decimals=18,
+        fee_asset_order=["stablecoin", "native"],
+        reimbursement_mode="none",
+        is_enabled=True,
+    )
 
 
 # =============================================================================
@@ -332,6 +351,35 @@ class TestSystemPolicy:
 
 
 # =============================================================================
+# Fee Policy Tests
+# =============================================================================
+
+class TestFeePolicy:
+    """Tests for FeePolicy."""
+
+    def test_missing_fee_policy_blocks(self, basic_context: ActionContext):
+        """Test that missing fee policy blocks execution."""
+        policy = FeePolicy(FeePolicyConfig.missing_for_chain(1))
+        violations = policy.evaluate(basic_context)
+
+        assert len(violations) == 1
+        assert violations[0].policy_name == "fee_policy_missing"
+        assert violations[0].severity == ViolationSeverity.BLOCK
+
+    def test_fee_asset_order_enforced(
+        self,
+        basic_context: ActionContext,
+        fee_policy_config: FeePolicyConfig,
+    ):
+        """Test that fee asset order must start with stablecoin."""
+        fee_policy_config.fee_asset_order = ["native", "stablecoin"]
+        policy = FeePolicy(fee_policy_config)
+        violations = policy.evaluate(basic_context)
+
+        assert any(v.policy_name == "fee_asset_order" for v in violations)
+
+
+# =============================================================================
 # Policy Engine Integration Tests
 # =============================================================================
 
@@ -386,6 +434,22 @@ class TestPolicyEngine:
 
         assert result.approved is False
         assert any(v.policy_type == PolicyType.SESSION for v in result.violations)
+
+    def test_fee_policy_blocks_before_session(
+        self,
+        valid_session_key: SessionKey,
+        basic_context: ActionContext,
+    ):
+        """Test that fee policy blocks before session checks."""
+        engine = PolicyEngine(
+            session_key=valid_session_key,
+            fee_config=FeePolicyConfig.missing_for_chain(1),
+        )
+
+        result = engine.evaluate(basic_context)
+
+        assert result.approved is False
+        assert any(v.policy_type == PolicyType.FEE for v in result.violations)
 
     def test_risk_warnings_included(
         self,

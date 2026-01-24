@@ -39,6 +39,11 @@ from .models import (
     BridgeQuote,
     ExecutionContext,
 )
+from .userop import (
+    UserOperation,
+    UserOpGasEstimate,
+    UserOpReceipt,
+)
 
 from .nonce_manager import (
     NonceManager,
@@ -64,6 +69,11 @@ from .executor import (
     SignatureRequiredError,
     get_transaction_executor,
 )
+from .erc4337_executor import (
+    UserOpExecutor,
+    UserOpExecutionError,
+    UserOpExecutionResult,
+)
 
 from .solana_executor import (
     SolanaExecutor,
@@ -84,6 +94,9 @@ __all__ = [
     "SwapQuote",
     "BridgeQuote",
     "ExecutionContext",
+    "UserOperation",
+    "UserOpGasEstimate",
+    "UserOpReceipt",
     # Nonce Manager
     "NonceManager",
     "NonceState",
@@ -103,6 +116,9 @@ __all__ = [
     "ApprovalRequiredError",
     "SignatureRequiredError",
     "get_transaction_executor",
+    "UserOpExecutor",
+    "UserOpExecutionError",
+    "UserOpExecutionResult",
     # Solana Executor
     "SolanaExecutor",
     "SolanaRpcConfig",
