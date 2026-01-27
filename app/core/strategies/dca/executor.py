@@ -3,6 +3,11 @@ DCA Executor
 
 Executes DCA strategy buys with constraint checking and session key validation.
 Supports both EVM chains (via Relay) and Solana (via Jupiter).
+
+For EVM chains, supports:
+1. Traditional transaction execution (manual/signed)
+2. ERC-4337 UserOperation execution
+3. Rhinestone intent-based execution (autonomous via Smart Sessions)
 """
 
 from __future__ import annotations
@@ -26,6 +31,15 @@ from .models import (
 from .scheduler import DCAScheduler
 
 logger = logging.getLogger(__name__)
+
+
+# Check if Rhinestone is available at module load
+try:
+    from app.services.intent_builder import get_intent_builder_service, IntentBuilderResult
+    from app.providers.rhinestone import IntentStatus, RhinestoneError
+    RHINESTONE_AVAILABLE = True
+except ImportError:
+    RHINESTONE_AVAILABLE = False
 
 
 @dataclass
@@ -205,6 +219,11 @@ class DCAExecutor:
         strategy: DCAStrategy,
     ) -> Tuple[bool, Optional[str]]:
         """Validate the strategy's session key is still active."""
+        # First check for Smart Session (Rhinestone on-chain session)
+        if strategy.smart_session_id:
+            return await self._validate_smart_session(strategy)
+
+        # Fall back to legacy off-chain session key
         if not strategy.session_key_id:
             return False, "No session key configured"
 
@@ -238,6 +257,51 @@ class DCAExecutor:
 
         except Exception as e:
             logger.error(f"Session key validation error: {e}")
+            return False, str(e)
+
+    async def _validate_smart_session(
+        self,
+        strategy: DCAStrategy,
+    ) -> Tuple[bool, Optional[str]]:
+        """Validate the strategy's Smart Session (Rhinestone on-chain session)."""
+        if not strategy.smart_session_id:
+            return False, "No Smart Session configured"
+
+        try:
+            # Check Smart Session status from Convex
+            smart_session = await self._convex.query(
+                "smartSessions:getBySessionId",
+                {"sessionId": strategy.smart_session_id},
+            )
+
+            if not smart_session:
+                return False, "Smart Session not found"
+
+            if smart_session.get("status") != "active":
+                return False, f"Smart Session is {smart_session.get('status')}"
+
+            # Check expiry
+            valid_until = smart_session.get("validUntil", 0)
+            if valid_until < datetime.utcnow().timestamp() * 1000:
+                return False, "Smart Session expired"
+
+            # Check spending limit
+            spending_limit = Decimal(str(smart_session.get("spendingLimitUsd", 0)))
+            total_spent = Decimal(str(smart_session.get("totalSpentUsd", 0)))
+            amount_needed = strategy.config.amount_per_execution_usd
+
+            if spending_limit > 0 and (total_spent + amount_needed) > spending_limit:
+                return False, "Smart Session spending limit would be exceeded"
+
+            # Check if swap action is allowed
+            allowed_actions = smart_session.get("allowedActions", [])
+            if "swap" not in allowed_actions:
+                return False, "Smart Session does not allow swap actions"
+
+            return True, None
+
+        except Exception as e:
+            logger.error(f"Smart Session validation error: {e}")
             return False, str(e)
 
     async def _get_market_conditions(
@@ -459,6 +523,10 @@ class DCAExecutor:
             # Solana: Build and execute via Jupiter + SolanaExecutor
             return await self._execute_solana_swap(strategy, quote)
 
+        # Check if we should use Rhinestone intent-based execution
+        if strategy.smart_session_id and RHINESTONE_AVAILABLE:
+            return await self._execute_swap_via_intent(strategy, quote)
+
         try:
             from app.core.execution import ExecutionContext, TransactionExecutor, TransactionStatus
             from app.core.execution.relay_adapter import relay_quote_to_swap_quote
@@ -467,10 +535,10 @@ class DCAExecutor:
             TransactionStatus = None  # type: ignore
 
         if self._tx_executor and TransactionExecutor and isinstance(self._tx_executor, TransactionExecutor):
-            if not user_op_signature or not quote.raw_quote:
+            if not quote.raw_quote:
                 return SwapResult(
                     success=False,
-                    error="UserOp signature and raw quote required for ERC-4337 execution",
+                    error="Raw quote required for ERC-4337 execution",
                 )
 
             swap_quote = relay_quote_to_swap_quote(
@@ -569,6 +637,121 @@ class DCAExecutor:
                 success=False,
                 error=str(e),
             )
+
+    async def _execute_swap_via_intent(
+        self,
+        strategy: DCAStrategy,
+        quote: ExecutionQuote,
+    ) -> "SwapResult":
+        """
+        Execute a swap via Rhinestone intent infrastructure.
+
+        Uses the Smart Session for on-chain permission validation.
+        The Rhinestone Orchestrator handles routing and execution.
+        """
+        if not RHINESTONE_AVAILABLE:
+            return SwapResult(
+                success=False,
+                error="Rhinestone not available",
+            )
+
+        try:
+            config = strategy.config
+            chain_id = config.from_token.chain_id
+
+            # Convert input amount to raw wei
+            amount_raw = str(int(quote.input_amount * (10 ** config.from_token.decimals)))
+
+            # Build and submit the DCA execution intent
+            intent_builder = get_intent_builder_service()
+
+            intent_result = await intent_builder.build_dca_execution_intent(
+                account_address=strategy.wallet_address,
+                strategy_id=strategy.id,
+                source_chains=[chain_id],  # Single chain for now
+                target_chain=chain_id,
+                token_in=config.from_token.address,
+                token_out=config.to_token.address,
+                amount=amount_raw,
+                session_id=strategy.smart_session_id,
+            )
+
+            if not intent_result.success:
+                logger.error(f"DCA intent submission failed: {intent_result.error}")
+                return SwapResult(
+                    success=False,
+                    error=intent_result.error or "Intent submission failed",
+                )
+
+            logger.info(
+                f"DCA intent submitted: {intent_result.intent_id} "
+                f"(strategy={strategy.id}, amount={quote.input_amount})"
+            )
+
+            # Optionally wait for intent completion
+            # For DCA, we typically want to wait to get the actual tx hash
+            try:
+                final_result = await intent_builder.wait_for_intent(
+                    intent_result.intent_id,
+                    timeout_s=120.0,
+                )
+
+                if final_result.status == IntentStatus.COMPLETED:
+                    tx_hash = final_result.tx_hashes[0] if final_result.tx_hashes else None
+
+                    # Record Smart Session usage
+                    if strategy.smart_session_id:
+                        await self._record_smart_session_usage(
+                            session_id=strategy.smart_session_id,
+                            amount_usd=float(quote.input_amount),
+                        )
+
+                    return SwapResult(
+                        success=True,
+                        tx_hash=tx_hash,
+                        input_amount=quote.input_amount,
+                        output_amount=quote.expected_output_amount,
+                    )
+                else:
+                    return SwapResult(
+                        success=False,
+                        error=final_result.error or "Intent execution failed",
+                    )
+
+            except RhinestoneError as e:
+                logger.error(f"Intent wait failed: {e}")
+                # Intent was submitted but we couldn't wait for completion
+                # Return partial success with the intent ID
+                return SwapResult(
+                    success=True,
+                    tx_hash=f"intent:{intent_result.intent_id}",
+                    input_amount=quote.input_amount,
+                    output_amount=quote.expected_output_amount,
+                )
+
+        except Exception as e:
+            logger.error(f"DCA intent execution error: {e}")
+            return SwapResult(
+                success=False,
+                error=str(e),
+            )
+
+    async def _record_smart_session_usage(
+        self,
+        session_id: str,
+        amount_usd: float,
+    ) -> None:
+        """Record usage against a Smart Session in Convex."""
+        try:
+            await self._convex.mutation(
+                "smartSessions:recordUsage",
+                {
+                    "sessionId": session_id,
+                    "amountUsd": amount_usd,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record Smart Session usage: {e}")
 
     async def _create_execution_record(
         self,

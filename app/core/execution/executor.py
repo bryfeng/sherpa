@@ -29,6 +29,15 @@ from app.core.policy import (
 )
 from app.core.recovery import RecoveryExecutor
 from app.core.wallet.models import SessionKey, Permission
+from app.providers.alchemy_wallet_api import get_alchemy_wallet_api_client, AlchemyWalletApiError
+from app.providers.turnkey import get_turnkey_provider, TurnkeyError
+from app.providers.rhinestone import (
+    get_rhinestone_provider,
+    RhinestoneError,
+    RhinestoneIntentError,
+    IntentStatus,
+)
+from app.services.intent_builder import get_intent_builder_service
 
 from .models import (
     PreparedTransaction,
@@ -116,6 +125,13 @@ class SignatureRequiredError(ExecutionError):
     pass
 
 
+class IntentExecutionError(ExecutionError):
+    """Intent execution failed via Rhinestone."""
+    def __init__(self, message: str, intent_id: Optional[str] = None):
+        super().__init__(message)
+        self.intent_id = intent_id
+
+
 class TransactionExecutor:
     """
     Executes transactions on EVM chains.
@@ -142,6 +158,7 @@ class TransactionExecutor:
         self._client = httpx.AsyncClient(timeout=60.0)
         self._recovery = RecoveryExecutor()
         self._userop_executor = UserOpExecutor()
+        self._wallet_api = None
 
         # RPC URLs per chain
         self._rpc_urls = rpc_urls or {
@@ -793,6 +810,291 @@ class TransactionExecutor:
             )
             raise
 
+    async def execute_swap_via_intent(
+        self,
+        quote: SwapQuote,
+        context: ExecutionContext,
+        session_id: Optional[str] = None,
+    ) -> TransactionResult:
+        """
+        Execute a swap via Rhinestone intent infrastructure.
+
+        Uses the IntentBuilderService to submit an intent to the
+        Rhinestone Orchestrator, which handles routing and execution.
+
+        Args:
+            quote: The swap quote
+            context: Execution context
+            session_id: Smart Session ID for autonomous execution
+
+        Returns:
+            TransactionResult with status and details
+        """
+        if not settings.enable_rhinestone:
+            raise ExecutionError("Rhinestone is not enabled")
+
+        await self._enforce_policy(
+            context=context,
+            action_type=TransactionType.SWAP.value,
+            chain_id=quote.chain_id,
+            value_usd=quote.value_in_usd,
+            token_in=quote.token_in_address,
+            token_out=quote.token_out_address,
+            slippage_percent=quote.slippage_bps / 100.0,
+            estimated_gas_usd=quote.gas_fee_usd,
+        )
+
+        # Convert amount to raw wei
+        amount_in_raw = str(int(
+            float(quote.amount_in) * (10 ** (quote.token_in_decimals or 18))
+        ))
+
+        # Get smart account address (use smart wallet address or wallet address)
+        smart_account = context.smart_wallet_address or context.wallet_address
+
+        # Record in database
+        db_tx_id = await self._create_db_transaction(
+            tx=PreparedTransaction(
+                tx_id=f"intent_{quote.request_id or 'swap'}",
+                chain_id=quote.chain_id,
+                tx_type=TransactionType.SWAP,
+                from_address=smart_account,
+                to_address="",  # Intent handles routing
+                data="",
+                value=0,
+            ),
+            context=context,
+            input_data={
+                "quote_id": quote.request_id,
+                "token_in": quote.token_in_symbol,
+                "token_out": quote.token_out_symbol,
+                "amount_in": quote.amount_in,
+                "amount_out_estimate": quote.amount_out_estimate,
+                "value_usd": quote.value_in_usd,
+                "execution_method": "rhinestone_intent",
+            },
+        )
+
+        try:
+            intent_builder = get_intent_builder_service()
+
+            # Build and submit the swap intent
+            intent_result = await intent_builder.build_swap_intent(
+                account_address=smart_account,
+                source_chain=quote.chain_id,
+                target_chain=quote.chain_id,  # Same chain swap
+                token_in=quote.token_in_address,
+                token_out=quote.token_out_address,
+                amount_in=amount_in_raw,
+                session_id=session_id,
+            )
+
+            if not intent_result.success:
+                raise IntentExecutionError(
+                    f"Failed to submit swap intent: {intent_result.error}"
+                )
+
+            result = TransactionResult(
+                tx_id=intent_result.intent_id or f"intent_{quote.request_id}",
+                chain_id=quote.chain_id,
+                status=TransactionStatus.SUBMITTED,
+                submitted_at=datetime.utcnow(),
+            )
+            result.output_data = {
+                "intent_id": intent_result.intent_id,
+                "execution_method": "rhinestone_intent",
+                **intent_result.details,
+            }
+
+            # Optionally wait for intent completion (configurable)
+            if context.wait_for_confirmation:
+                try:
+                    rhinestone = get_rhinestone_provider()
+                    final_result = await rhinestone.wait_for_intent(
+                        intent_result.intent_id,
+                        timeout_s=context.confirmation_timeout_seconds,
+                    )
+                    if final_result.status == IntentStatus.COMPLETED:
+                        result.status = TransactionStatus.CONFIRMED
+                        result.confirmed_at = datetime.utcnow()
+                        if final_result.tx_hashes:
+                            result.tx_hash = final_result.tx_hashes[0]
+                    else:
+                        result.status = TransactionStatus.FAILED
+                        result.error = final_result.error
+                except RhinestoneIntentError as e:
+                    result.status = TransactionStatus.FAILED
+                    result.error = str(e)
+
+            # Update database
+            await self._update_db_transaction(db_tx_id, result)
+
+            if result.status in (TransactionStatus.SUBMITTED, TransactionStatus.CONFIRMED):
+                await self._record_session_usage(
+                    context=context,
+                    action=Permission.SWAP,
+                    value_usd=quote.value_in_usd,
+                    tx_hash=result.tx_hash,
+                    metadata={
+                        "quoteId": quote.request_id,
+                        "intentId": intent_result.intent_id,
+                    },
+                )
+
+            return result
+
+        except RhinestoneError as e:
+            logger.error(f"Rhinestone intent execution failed: {e}")
+            await self._update_db_transaction(
+                db_tx_id,
+                TransactionResult(
+                    tx_id=f"intent_{quote.request_id or 'swap'}",
+                    status=TransactionStatus.FAILED,
+                    chain_id=quote.chain_id,
+                    error=str(e),
+                ),
+            )
+            raise IntentExecutionError(str(e)) from e
+
+    async def execute_bridge_via_intent(
+        self,
+        quote: BridgeQuote,
+        context: ExecutionContext,
+        session_id: Optional[str] = None,
+    ) -> TransactionResult:
+        """
+        Execute a bridge via Rhinestone intent infrastructure.
+
+        Args:
+            quote: The bridge quote
+            context: Execution context
+            session_id: Smart Session ID for autonomous execution
+
+        Returns:
+            TransactionResult with status and details
+        """
+        if not settings.enable_rhinestone:
+            raise ExecutionError("Rhinestone is not enabled")
+
+        await self._enforce_policy(
+            context=context,
+            action_type=TransactionType.BRIDGE.value,
+            chain_id=quote.origin_chain_id,
+            value_usd=quote.value_in_usd,
+            token_in=quote.token_in_address,
+            token_out=quote.token_out_address,
+            slippage_percent=quote.slippage_bps / 100.0,
+            estimated_gas_usd=quote.gas_fee_usd,
+        )
+
+        # Convert amount to raw
+        amount_raw = str(int(
+            float(quote.amount_in) * (10 ** (quote.token_in_decimals or 18))
+        ))
+
+        smart_account = context.smart_wallet_address or context.wallet_address
+
+        db_tx_id = await self._create_db_transaction(
+            tx=PreparedTransaction(
+                tx_id=f"intent_{quote.request_id or 'bridge'}",
+                chain_id=quote.origin_chain_id,
+                tx_type=TransactionType.BRIDGE,
+                from_address=smart_account,
+                to_address="",
+                data="",
+                value=0,
+            ),
+            context=context,
+            input_data={
+                "quote_id": quote.request_id,
+                "origin_chain": quote.origin_chain_id,
+                "destination_chain": quote.destination_chain_id,
+                "token_in": quote.token_in_symbol,
+                "token_out": quote.token_out_symbol,
+                "amount_in": quote.amount_in,
+                "amount_out_estimate": quote.amount_out_estimate,
+                "value_usd": quote.value_in_usd,
+                "execution_method": "rhinestone_intent",
+            },
+        )
+
+        try:
+            intent_builder = get_intent_builder_service()
+
+            intent_result = await intent_builder.build_bridge_intent(
+                account_address=smart_account,
+                source_chain=quote.origin_chain_id,
+                target_chain=quote.destination_chain_id,
+                token=quote.token_in_address,
+                amount=amount_raw,
+                session_id=session_id,
+            )
+
+            if not intent_result.success:
+                raise IntentExecutionError(
+                    f"Failed to submit bridge intent: {intent_result.error}"
+                )
+
+            result = TransactionResult(
+                tx_id=intent_result.intent_id or f"intent_{quote.request_id}",
+                chain_id=quote.origin_chain_id,
+                status=TransactionStatus.SUBMITTED,
+                submitted_at=datetime.utcnow(),
+            )
+            result.output_data = {
+                "intent_id": intent_result.intent_id,
+                "execution_method": "rhinestone_intent",
+                **intent_result.details,
+            }
+
+            if context.wait_for_confirmation:
+                try:
+                    rhinestone = get_rhinestone_provider()
+                    final_result = await rhinestone.wait_for_intent(
+                        intent_result.intent_id,
+                        timeout_s=context.confirmation_timeout_seconds,
+                    )
+                    if final_result.status == IntentStatus.COMPLETED:
+                        result.status = TransactionStatus.CONFIRMED
+                        result.confirmed_at = datetime.utcnow()
+                        if final_result.tx_hashes:
+                            result.tx_hash = final_result.tx_hashes[0]
+                    else:
+                        result.status = TransactionStatus.FAILED
+                        result.error = final_result.error
+                except RhinestoneIntentError as e:
+                    result.status = TransactionStatus.FAILED
+                    result.error = str(e)
+
+            await self._update_db_transaction(db_tx_id, result)
+
+            if result.status in (TransactionStatus.SUBMITTED, TransactionStatus.CONFIRMED):
+                await self._record_session_usage(
+                    context=context,
+                    action=Permission.BRIDGE,
+                    value_usd=quote.value_in_usd,
+                    tx_hash=result.tx_hash,
+                    metadata={
+                        "quoteId": quote.request_id,
+                        "intentId": intent_result.intent_id,
+                    },
+                )
+
+            return result
+
+        except RhinestoneError as e:
+            logger.error(f"Rhinestone bridge intent execution failed: {e}")
+            await self._update_db_transaction(
+                db_tx_id,
+                TransactionResult(
+                    tx_id=f"intent_{quote.request_id or 'bridge'}",
+                    status=TransactionStatus.FAILED,
+                    chain_id=quote.origin_chain_id,
+                    error=str(e),
+                ),
+            )
+            raise IntentExecutionError(str(e)) from e
+
     async def _execute_transaction(
         self,
         tx: PreparedTransaction,
@@ -898,6 +1200,13 @@ class TransactionExecutor:
         if not settings.enable_erc4337:
             raise ExecutionError("ERC-4337 execution is disabled in settings")
 
+        if settings.enable_alchemy_wallet_api:
+            return await self._execute_userop_via_wallet_api(
+                tx=tx,
+                context=context,
+                signed_tx=signed_tx,
+            )
+
         sender = context.smart_wallet_address or context.wallet_address or tx.from_address
         if not sender:
             raise ExecutionError("Smart wallet address is required for ERC-4337 execution")
@@ -942,7 +1251,10 @@ class TransactionExecutor:
             raise ExecutionError(f"Paymaster sponsorship failed: {exc}") from exc
 
         try:
-            gas_estimate = await self._userop_executor.estimate_gas(user_op)
+            gas_estimate = await self._userop_executor.estimate_gas(
+                user_op,
+                chain_id=tx.chain_id,
+            )
         except UserOpExecutionError as exc:
             raise ExecutionError(f"UserOp gas estimation failed: {exc}") from exc
 
@@ -965,7 +1277,10 @@ class TransactionExecutor:
             return result
 
         try:
-            send_result = await self._userop_executor.send_user_operation(user_op)
+            send_result = await self._userop_executor.send_user_operation(
+                user_op,
+                chain_id=tx.chain_id,
+            )
         except UserOpExecutionError as exc:
             result.status = TransactionStatus.FAILED
             result.error = str(exc)
@@ -975,6 +1290,158 @@ class TransactionExecutor:
         result.status = TransactionStatus.SUBMITTED
         result.submitted_at = datetime.utcnow()
         return result
+
+    async def _execute_userop_via_wallet_api(
+        self,
+        *,
+        tx: PreparedTransaction,
+        context: ExecutionContext,
+        signed_tx: Optional[str],
+    ) -> TransactionResult:
+        if not settings.enable_alchemy_wallet_api:
+            raise ExecutionError("Alchemy Wallet API execution is disabled in settings")
+
+        if self._wallet_api is None:
+            self._wallet_api = get_alchemy_wallet_api_client()
+
+        if not await self._wallet_api.ready():
+            raise ExecutionError("Alchemy Wallet API not configured")
+
+        sender = context.smart_wallet_address or context.wallet_address or tx.from_address
+        if not sender:
+            raise ExecutionError("Smart wallet address is required for Wallet API execution")
+
+        call = {
+            "to": tx.to_address,
+            "data": tx.data,
+            "value": hex(tx.value or 0),
+        }
+
+        prepared = await self._wallet_api.prepare_calls(
+            from_address=sender,
+            chain_id=tx.chain_id,
+            calls=[call],
+        )
+
+        result = TransactionResult(
+            tx_id=tx.tx_id,
+            chain_id=tx.chain_id,
+            status=TransactionStatus.PENDING,
+        )
+
+        if context.simulate:
+            result.output_data = {"preparedCall": prepared}
+            return result
+
+        signature = context.user_op_signature or signed_tx
+
+        # If no signature provided, try Turnkey autonomous signing
+        if not signature and settings.enable_turnkey:
+            signature = await self._sign_with_turnkey(
+                wallet_address=context.wallet_address,
+                prepared_call=prepared,
+                chain_id=tx.chain_id,
+            )
+
+        if not signature:
+            raise SignatureRequiredError("Wallet API signature required for ERC-4337 execution.")
+
+        prepared_call = {
+            "type": prepared.get("type"),
+            "data": prepared.get("data"),
+            "chainId": prepared.get("chainId"),
+            "signature": {"type": "secp256k1", "data": signature},
+        }
+
+        try:
+            send_result = await self._wallet_api.send_prepared_calls(prepared_call=prepared_call)
+        except AlchemyWalletApiError as exc:
+            result.status = TransactionStatus.FAILED
+            result.error = str(exc)
+            return result
+
+        prepared_call_ids = send_result.get("preparedCallIds") or []
+        result.status = TransactionStatus.SUBMITTED
+        result.submitted_at = datetime.utcnow()
+        result.output_data = {
+            "preparedCallIds": prepared_call_ids,
+            "signatureRequest": prepared.get("signatureRequest"),
+        }
+        if prepared_call_ids:
+            result.tx_hash = prepared_call_ids[0]
+        return result
+
+    async def _sign_with_turnkey(
+        self,
+        wallet_address: str,
+        prepared_call: Dict[str, Any],
+        chain_id: int,
+    ) -> Optional[str]:
+        """
+        Sign a prepared call using Turnkey session wallet.
+
+        Args:
+            wallet_address: User's main wallet address
+            prepared_call: Prepared call from Alchemy Wallet API
+            chain_id: Chain ID for determining chain type
+
+        Returns:
+            Signature if successful, None otherwise
+        """
+        try:
+            # Import here to avoid circular dependency
+            from app.services.session_wallet_service import get_session_wallet_service
+
+            # Determine chain type
+            chain_type = "solana" if chain_id == "solana" else "evm"
+
+            # Get the user's Turnkey session wallet
+            service = get_session_wallet_service()
+            session_wallet = await service.get_session_wallet(
+                wallet_address=wallet_address,
+                chain_type=chain_type,
+            )
+
+            if not session_wallet:
+                logger.debug(f"No Turnkey session wallet for {wallet_address}")
+                return None
+
+            if session_wallet.status != "active":
+                logger.warning(
+                    f"Turnkey session wallet {session_wallet.turnkey_wallet_id} is {session_wallet.status}"
+                )
+                return None
+
+            # Get the hash to sign from the prepared call
+            signature_request = prepared_call.get("signatureRequest", {})
+            raw_payload = signature_request.get("rawPayload")
+
+            if not raw_payload:
+                logger.warning("No rawPayload in prepared call signatureRequest")
+                return None
+
+            # Sign with Turnkey
+            turnkey = get_turnkey_provider()
+            signature = await turnkey.sign_raw_payload(
+                wallet_address=session_wallet.turnkey_address,
+                payload_hex=raw_payload.replace("0x", ""),
+                hash_function="HASH_FUNCTION_NO_OP",  # Already hashed
+            )
+
+            # Record the signature for stats
+            await service.record_signature(session_wallet.turnkey_address)
+
+            logger.info(
+                f"Signed with Turnkey session wallet {session_wallet.turnkey_address[:10]}..."
+            )
+            return signature
+
+        except TurnkeyError as e:
+            logger.error(f"Turnkey signing failed: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error during Turnkey signing: {e}")
+            return None
 
     async def _submit_raw_transaction(
         self,

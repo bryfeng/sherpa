@@ -7,8 +7,9 @@ For manual approval flow:
 - Returns unsigned transactions for frontend signing
 - Does NOT execute transactions directly
 
-For autonomous flow (with session keys):
-- Would execute via session key signing (future)
+For autonomous flow:
+- Via legacy session keys (deprecated)
+- Via Rhinestone Smart Sessions (preferred for EVM)
 """
 
 from __future__ import annotations
@@ -26,6 +27,15 @@ if TYPE_CHECKING:
     from ...providers.relay import RelayProvider
 
 logger = logging.getLogger(__name__)
+
+
+# Check if Rhinestone is available at module load
+try:
+    from app.services.intent_builder import get_intent_builder_service, IntentBuilderResult
+    from app.providers.rhinestone import IntentStatus, RhinestoneError
+    RHINESTONE_AVAILABLE = True
+except ImportError:
+    RHINESTONE_AVAILABLE = False
 
 
 @dataclass
@@ -166,6 +176,7 @@ class CopyExecutor:
         max_slippage_bps: int = 100,
         session_key: Optional[SessionKey] = None,
         user_op_signature: Optional[str] = None,
+        smart_session_id: Optional[str] = None,
     ) -> ExecutionResult:
         """
         Execute a copy trade.
@@ -175,8 +186,9 @@ class CopyExecutor:
         - Frontend signs and submits
         - Frontend calls confirm_execution() with tx hash
 
-        For autonomous flow (with session key):
-        - Would sign and submit directly (future)
+        For autonomous flow:
+        - With smart_session_id: Execute via Rhinestone intents (preferred)
+        - With session_key: Execute via ERC-4337 (legacy)
 
         Args:
             signal: Original trade signal from the leader
@@ -184,7 +196,9 @@ class CopyExecutor:
             follower_address: Address of the follower wallet
             follower_chain: Chain of the follower wallet
             max_slippage_bps: Maximum slippage in basis points
-            session_key: Session key for autonomous execution
+            session_key: Session key for ERC-4337 autonomous execution (legacy)
+            user_op_signature: Pre-signed user operation (legacy)
+            smart_session_id: Rhinestone Smart Session ID for intent execution
 
         Returns:
             Execution result
@@ -210,8 +224,8 @@ class CopyExecutor:
                     error_message=quote.error_message or "Failed to get quote",
                 )
 
-            # If no session key, return unsigned transaction for manual signing
-            if not session_key:
+            # If no session key or smart session, return unsigned transaction for manual signing
+            if not session_key and not smart_session_id:
                 return ExecutionResult(
                     success=True,
                     requires_signature=True,
@@ -223,10 +237,21 @@ class CopyExecutor:
                     slippage_bps=max_slippage_bps,
                 )
 
-            # Autonomous execution via ERC-4337 (EVM only)
+            # Autonomous execution via Rhinestone intents (preferred)
+            if smart_session_id and RHINESTONE_AVAILABLE and follower_chain.lower() != "solana":
+                return await self._execute_via_intent(
+                    signal=signal,
+                    size_usd=size_usd,
+                    follower_address=follower_address,
+                    follower_chain=follower_chain,
+                    quote=quote,
+                    max_slippage_bps=max_slippage_bps,
+                    smart_session_id=smart_session_id,
+                )
+
+            # Legacy autonomous execution via ERC-4337 (EVM only)
             if (
-                user_op_signature
-                and quote.transaction_data
+                quote.transaction_data
                 and quote.transaction_data.get("type") == "evm"
                 and self.tx_executor
             ):
@@ -263,20 +288,28 @@ class CopyExecutor:
                         simulate=False,
                     )
 
-                    tx_result = await self.tx_executor.execute_swap(
-                        quote=swap_quote,
-                        context=context,
-                        signed_tx=user_op_signature,
-                    )
+                    try:
+                        tx_result = await self.tx_executor.execute_swap(
+                            quote=swap_quote,
+                            context=context,
+                            signed_tx=user_op_signature,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "ERC-4337 execution failed (%s); falling back to manual signing",
+                            exc,
+                        )
+                        tx_result = None
 
-                    return ExecutionResult(
-                        success=tx_result.status in (TransactionStatus.SUBMITTED, TransactionStatus.CONFIRMED),
-                        tx_hash=tx_result.tx_hash,
-                        token_out_amount=quote.output_amount,
-                        actual_value_usd=size_usd,
-                        slippage_bps=max_slippage_bps,
-                        error_message=tx_result.error,
-                    )
+                    if tx_result is not None:
+                        return ExecutionResult(
+                            success=tx_result.status in (TransactionStatus.SUBMITTED, TransactionStatus.CONFIRMED),
+                            tx_hash=tx_result.tx_hash,
+                            token_out_amount=quote.output_amount,
+                            actual_value_usd=size_usd,
+                            slippage_bps=max_slippage_bps,
+                            error_message=tx_result.error,
+                        )
 
             # Otherwise, return unsigned transaction for manual signing
             logger.warning("Session key execution not yet implemented, returning for manual signing")
@@ -543,6 +576,109 @@ class CopyExecutor:
             "bsc": 56,
         }
         return chain_map.get(chain.lower(), 1)
+
+    async def _execute_via_intent(
+        self,
+        signal: TradeSignal,
+        size_usd: Decimal,
+        follower_address: str,
+        follower_chain: str,
+        quote: QuoteResult,
+        max_slippage_bps: int,
+        smart_session_id: str,
+    ) -> ExecutionResult:
+        """
+        Execute a copy trade via Rhinestone intent infrastructure.
+
+        Uses the Smart Session for on-chain permission validation.
+        """
+        if not RHINESTONE_AVAILABLE:
+            return ExecutionResult(
+                success=False,
+                error_message="Rhinestone not available",
+            )
+
+        try:
+            chain_id = self._chain_to_id(follower_chain)
+
+            # Get input token decimals
+            input_decimals = 18
+            if quote.transaction_data:
+                input_decimals = quote.transaction_data.get("token_in_decimals", 18)
+
+            # Convert amount to raw wei
+            amount_raw = str(quote.input_amount_raw or int(
+                float(quote.input_amount or 0) * (10 ** input_decimals)
+            ))
+
+            # Build and submit the copy trade intent
+            intent_builder = get_intent_builder_service()
+
+            intent_result = await intent_builder.build_copy_trade_intent(
+                account_address=follower_address,
+                leader_address=signal.leader_address,
+                source_chains=[chain_id],
+                target_chain=chain_id,
+                token_in=signal.token_in_address,
+                token_out=signal.token_out_address,
+                amount=amount_raw,
+                original_tx_hash=signal.tx_hash,
+                session_id=smart_session_id,
+            )
+
+            if not intent_result.success:
+                logger.error(f"Copy trade intent submission failed: {intent_result.error}")
+                return ExecutionResult(
+                    success=False,
+                    error_message=intent_result.error or "Intent submission failed",
+                )
+
+            logger.info(
+                f"Copy trade intent submitted: {intent_result.intent_id} "
+                f"(copying {signal.leader_address})"
+            )
+
+            # Wait for intent completion to get tx hash
+            try:
+                final_result = await intent_builder.wait_for_intent(
+                    intent_result.intent_id,
+                    timeout_s=120.0,
+                )
+
+                if final_result.status == IntentStatus.COMPLETED:
+                    tx_hash = final_result.tx_hashes[0] if final_result.tx_hashes else None
+
+                    return ExecutionResult(
+                        success=True,
+                        tx_hash=tx_hash,
+                        token_out_amount=quote.output_amount,
+                        actual_value_usd=size_usd,
+                        slippage_bps=max_slippage_bps,
+                    )
+                else:
+                    return ExecutionResult(
+                        success=False,
+                        error_message=final_result.error or "Intent execution failed",
+                    )
+
+            except RhinestoneError as e:
+                logger.warning(f"Intent wait failed: {e}")
+                # Intent was submitted but we couldn't wait for completion
+                # Return partial success
+                return ExecutionResult(
+                    success=True,
+                    tx_hash=f"intent:{intent_result.intent_id}",
+                    token_out_amount=quote.output_amount,
+                    actual_value_usd=size_usd,
+                    slippage_bps=max_slippage_bps,
+                )
+
+        except Exception as e:
+            logger.error(f"Copy trade intent execution error: {e}", exc_info=True)
+            return ExecutionResult(
+                success=False,
+                error_message=str(e),
+            )
 
     async def estimate_execution(
         self,

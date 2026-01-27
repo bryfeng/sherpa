@@ -199,7 +199,8 @@ class DCAStrategy:
     # State
     status: DCAStatus = DCAStatus.DRAFT
     pause_reason: Optional[str] = None
-    session_key_id: Optional[str] = None
+    session_key_id: Optional[str] = None  # Legacy off-chain session key
+    smart_session_id: Optional[str] = None  # Rhinestone on-chain Smart Session
 
     # Scheduling
     next_execution_at: Optional[datetime] = None
@@ -259,6 +260,7 @@ class DCAStrategy:
             status=DCAStatus(data["status"]),
             pause_reason=data.get("pauseReason"),
             session_key_id=data.get("sessionKeyId"),
+            smart_session_id=data.get("smartSessionId"),
             next_execution_at=datetime.fromtimestamp(data["nextExecutionAt"] / 1000) if data.get("nextExecutionAt") else None,
             last_execution_at=datetime.fromtimestamp(data["lastExecutionAt"] / 1000) if data.get("lastExecutionAt") else None,
             stats=stats,

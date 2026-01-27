@@ -252,3 +252,8 @@ class ExecutionContext:
     user_op_signature: Optional[str] = None
     user_op_nonce_key: Optional[int] = None
     simulate: bool = True
+
+    # Rhinestone intent-based execution
+    use_rhinestone_intent: bool = False  # Use Rhinestone Warp intents
+    smart_session_id: Optional[str] = None  # On-chain Smart Session ID
+    wait_for_confirmation: bool = False  # Wait for intent completion
