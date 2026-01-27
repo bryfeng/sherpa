@@ -22,8 +22,10 @@ from typing import Any, Dict, List, Optional
 
 from ..config import settings
 from ..providers.rhinestone import get_rhinestone_provider, RhinestoneError
-from ..providers.paymaster import get_paymaster_provider, PaymasterError
 from ..services.unified_balance import get_unified_balance_service
+
+# Lazy import to avoid circular dependency
+# from ..providers.paymaster import get_paymaster_provider, PaymasterError
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +104,6 @@ class GasAbstractionService:
 
     def __init__(self) -> None:
         self._rhinestone = get_rhinestone_provider()
-        self._paymaster = get_paymaster_provider()
         self._balance_service = get_unified_balance_service()
 
     async def estimate_intent_gas(
