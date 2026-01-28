@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks, copy_trading, polymarket, session_wallet, smart_accounts, swig_wallets, permissions
+from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks, copy_trading, polymarket, smart_accounts, swig_wallets, permissions
 from .api import relay as relay_api
 from .agent_runtime.router import router as runtime_router
 from .agent_runtime import get_runtime, register_builtin_strategies
@@ -59,7 +59,6 @@ app.include_router(news.router, tags=["News"])
 app.include_router(webhooks.router, tags=["Webhooks"])
 app.include_router(copy_trading.router, tags=["Copy Trading"])
 app.include_router(polymarket.router, tags=["Polymarket"])
-app.include_router(session_wallet.router, tags=["Session Wallet"])
 app.include_router(smart_accounts.router, tags=["Smart Accounts"])
 app.include_router(swig_wallets.router, tags=["Swig Wallets"])
 app.include_router(permissions.router, tags=["Permissions"])

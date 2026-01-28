@@ -30,7 +30,6 @@ from app.core.policy import (
 from app.core.recovery import RecoveryExecutor
 from app.core.wallet.models import SessionKey, Permission
 from app.providers.alchemy_wallet_api import get_alchemy_wallet_api_client, AlchemyWalletApiError
-from app.providers.turnkey import get_turnkey_provider, TurnkeyError
 from app.providers.rhinestone import (
     get_rhinestone_provider,
     RhinestoneError,
@@ -1335,14 +1334,6 @@ class TransactionExecutor:
 
         signature = context.user_op_signature or signed_tx
 
-        # If no signature provided, try Turnkey autonomous signing
-        if not signature and settings.enable_turnkey:
-            signature = await self._sign_with_turnkey(
-                wallet_address=context.wallet_address,
-                prepared_call=prepared,
-                chain_id=tx.chain_id,
-            )
-
         if not signature:
             raise SignatureRequiredError("Wallet API signature required for ERC-4337 execution.")
 
@@ -1370,78 +1361,6 @@ class TransactionExecutor:
         if prepared_call_ids:
             result.tx_hash = prepared_call_ids[0]
         return result
-
-    async def _sign_with_turnkey(
-        self,
-        wallet_address: str,
-        prepared_call: Dict[str, Any],
-        chain_id: int,
-    ) -> Optional[str]:
-        """
-        Sign a prepared call using Turnkey session wallet.
-
-        Args:
-            wallet_address: User's main wallet address
-            prepared_call: Prepared call from Alchemy Wallet API
-            chain_id: Chain ID for determining chain type
-
-        Returns:
-            Signature if successful, None otherwise
-        """
-        try:
-            # Import here to avoid circular dependency
-            from app.services.session_wallet_service import get_session_wallet_service
-
-            # Determine chain type
-            chain_type = "solana" if chain_id == "solana" else "evm"
-
-            # Get the user's Turnkey session wallet
-            service = get_session_wallet_service()
-            session_wallet = await service.get_session_wallet(
-                wallet_address=wallet_address,
-                chain_type=chain_type,
-            )
-
-            if not session_wallet:
-                logger.debug(f"No Turnkey session wallet for {wallet_address}")
-                return None
-
-            if session_wallet.status != "active":
-                logger.warning(
-                    f"Turnkey session wallet {session_wallet.turnkey_wallet_id} is {session_wallet.status}"
-                )
-                return None
-
-            # Get the hash to sign from the prepared call
-            signature_request = prepared_call.get("signatureRequest", {})
-            raw_payload = signature_request.get("rawPayload")
-
-            if not raw_payload:
-                logger.warning("No rawPayload in prepared call signatureRequest")
-                return None
-
-            # Sign with Turnkey
-            turnkey = get_turnkey_provider()
-            signature = await turnkey.sign_raw_payload(
-                wallet_address=session_wallet.turnkey_address,
-                payload_hex=raw_payload.replace("0x", ""),
-                hash_function="HASH_FUNCTION_NO_OP",  # Already hashed
-            )
-
-            # Record the signature for stats
-            await service.record_signature(session_wallet.turnkey_address)
-
-            logger.info(
-                f"Signed with Turnkey session wallet {session_wallet.turnkey_address[:10]}..."
-            )
-            return signature
-
-        except TurnkeyError as e:
-            logger.error(f"Turnkey signing failed: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"Unexpected error during Turnkey signing: {e}")
-            return None
 
     async def _submit_raw_transaction(
         self,

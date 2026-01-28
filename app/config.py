@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     enable_perennial: bool = Field(default=True, description="Enable Perennial perps provider")
     enable_cex_proxy: bool = Field(default=False, description="Enable centralized exchange proxy provider")
     enable_erc4337: bool = Field(default=False, description="Enable ERC-4337 smart wallet execution")
+    enable_alchemy_wallet_api: bool = Field(
+        default=False,
+        description="Enable Alchemy Wallet APIs for smart wallet execution",
+    )
 
     # Solana / Non-EVM Providers
     solana_helius_api_key: str = Field(
@@ -104,6 +108,10 @@ class Settings(BaseSettings):
         default="",
         description="ERC-4337 bundler RPC URL",
     )
+    erc4337_bundler_urls: Dict[int, str] = Field(
+        default_factory=dict,
+        description="Optional JSON map of chain_id -> bundler RPC URL",
+    )
     erc4337_paymaster_url: str = Field(
         default="",
         description="ERC-4337 paymaster RPC URL",
@@ -125,6 +133,16 @@ class Settings(BaseSettings):
         description="Override execute function selector (0x....) if signature differs",
     )
 
+    # Alchemy Wallet APIs
+    alchemy_wallet_api_url: str = Field(
+        default="",
+        description="Override Alchemy Wallet API base URL (defaults to https://api.g.alchemy.com/v2/{alchemy_api_key})",
+    )
+    alchemy_wallet_api_timeout_seconds: int = Field(
+        default=20,
+        description="Alchemy Wallet API HTTP timeout (seconds)",
+    )
+
     # Swig (Solana Smart Wallet)
     enable_swig: bool = Field(default=False, description="Enable Swig smart wallet integration")
     swig_base_url: str = Field(
@@ -135,6 +153,21 @@ class Settings(BaseSettings):
         default="",
         description="Swig API key",
     )
+
+    # Rhinestone (Smart Wallet + Intent Infrastructure)
+    enable_rhinestone: bool = Field(
+        default=False,
+        description="Enable Rhinestone Smart Wallet and Intent infrastructure",
+    )
+    rhinestone_api_key: str = Field(
+        default="",
+        description="Rhinestone API key (optional for development)",
+    )
+    rhinestone_base_url: str = Field(
+        default="https://api.rhinestone.dev",
+        description="Rhinestone API base URL",
+    )
+
     redis_url: str = Field(
         default="",
         description="Redis connection string used for caching wallet history summaries",

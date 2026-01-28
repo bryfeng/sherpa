@@ -12,6 +12,11 @@ total_tokens: ~530000
 
 Sherpa is an AI-powered DeFi portfolio assistant with LLM-driven natural language conversations, automated trading strategies (DCA, Copy Trading), multi-chain support (EVM + Solana), and comprehensive portfolio insights.
 
+> **⚠️ Architecture Update (2026-01-27):** Turnkey has been removed. The execution layer now uses Rhinestone Smart Sessions for autonomous execution. See `planning/backend-production-roadmap.md` for details. Key architecture:
+> - **Session Keys**: On-chain Smart Sessions (user signs ONE grant, backend submits intents within constraints)
+> - **Execution**: Rhinestone intent infrastructure (no backend signing needed)
+> - **Solana**: Will use Swig for smart wallets (later phase)
+
 ```mermaid
 graph TB
     subgraph Client
@@ -123,8 +128,10 @@ backend/
 │   │   │   ├── tx_builder.py     # Transaction construction
 │   │   │   └── models.py         # TX data models
 │   │   │
-│   │   ├── wallet/               # Session key system
-│   │   │   ├── session_manager.py # Session lifecycle
+│   │   ├── wallet/               # Wallet & session management
+│   │   │   ├── session_manager.py # Session key lifecycle (off-chain validation)
+│   │   │   ├── smart_sessions.py  # Rhinestone Smart Sessions config helpers
+│   │   │   ├── swig_session.py    # Swig session authority (Solana)
 │   │   │   └── models.py         # Permission/limit models
 │   │   │
 │   │   ├── swap/                 # Swap orchestration
@@ -398,6 +405,8 @@ backend/
 | Relay | `relay.py` | Cross-chain bridge quotes |
 | Anthropic | `llm/anthropic.py` | Claude with tool calling |
 | Z AI | `llm/zai.py` | Chat completions |
+| Rhinestone | `rhinestone.py` | Smart Wallet + Intent infrastructure |
+| Swig | `swig.py` | 🔲 Planned - Solana smart wallets |
 
 **Patterns**: Provider abstraction, health checks, fallbacks
 
