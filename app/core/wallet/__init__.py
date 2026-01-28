@@ -74,6 +74,17 @@ from .swig_session import (
     SwigSessionConfig,
     SwigSessionError,
 )
+from .smart_sessions import (
+    SmartSessionConfig,
+    SmartSessionsHelper,
+    SmartSessionError,
+    ActionType,
+    SpendingLimit,
+    TimeConstraint,
+    ContractPolicy,
+    validate_session_config,
+    build_permission_grant_data,
+)
 
 __all__ = [
     # Models
@@ -98,4 +109,14 @@ __all__ = [
     "SwigSessionAuthorityManager",
     "SwigSessionConfig",
     "SwigSessionError",
+    # Smart Sessions (Rhinestone on-chain)
+    "SmartSessionConfig",
+    "SmartSessionsHelper",
+    "SmartSessionError",
+    "ActionType",
+    "SpendingLimit",
+    "TimeConstraint",
+    "ContractPolicy",
+    "validate_session_config",
+    "build_permission_grant_data",
 ]
