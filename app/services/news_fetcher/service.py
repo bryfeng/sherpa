@@ -344,24 +344,37 @@ class NewsFetcherService:
         if not self._convex:
             return []
 
-        since_timestamp = int(
-            (datetime.now(timezone.utc) - timedelta(hours=since_hours)).timestamp() * 1000
-        )
+        query_name = "news:getRecentDiversified" if diversified else "news:getRecent"
 
-        try:
-            params: Dict[str, Any] = {
-                "limit": limit,
-                "sinceTimestamp": since_timestamp,
-            }
-            if category:
-                params["category"] = category
+        # Try progressively wider time windows until we get results
+        time_windows = [since_hours, 168, None]  # 24h, 7 days, no limit
 
-            # Use diversified query by default to prevent single-source dominance
-            query_name = "news:getRecentDiversified" if diversified else "news:getRecent"
-            return await self._convex.query(query_name, params)
-        except Exception as e:
-            logger.error(f"Error getting recent news: {e}")
-            return []
+        for hours in time_windows:
+            try:
+                params: Dict[str, Any] = {"limit": limit}
+
+                if hours is not None:
+                    since_timestamp = int(
+                        (datetime.now(timezone.utc) - timedelta(hours=hours)).timestamp() * 1000
+                    )
+                    params["sinceTimestamp"] = since_timestamp
+
+                if category:
+                    params["category"] = category
+
+                result = await self._convex.query(query_name, params)
+
+                if result and len(result) > 0:
+                    if hours != since_hours and hours is not None:
+                        logger.info(f"No news in last {since_hours}h, returning news from last {hours}h")
+                    elif hours is None:
+                        logger.info(f"No recent news found, returning all available news")
+                    return result
+
+            except Exception as e:
+                logger.error(f"Error getting recent news (window={hours}h): {e}")
+
+        return []
 
     async def get_token_news(
         self,
