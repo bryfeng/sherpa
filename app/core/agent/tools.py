@@ -141,8 +141,9 @@ class ToolRegistry:
                 name="get_trending_tokens",
                 description=(
                     "Fetch currently trending cryptocurrency tokens with price changes "
-                    "and market data. Use this when the user asks about trending tokens, "
-                    "top gainers, top losers, hot coins, or what's popular in crypto."
+                    "and market data. Use this when the user asks specifically about "
+                    "trending tokens, price movers, top gainers/losers, hot coins, or "
+                    "which tokens are pumping. NOT for news articles or stories."
                 ),
                 parameters=[
                     ToolParameter(
@@ -247,11 +248,11 @@ class ToolRegistry:
             ToolDefinition(
                 name="get_news",
                 description=(
-                    "Fetch recent cryptocurrency news with source diversity. "
+                    "Fetch recent cryptocurrency news articles and headlines. "
                     "Returns a balanced mix of: news articles (CoinDesk, Cointelegraph, The Block), "
                     "trending tokens (CoinGecko), and DeFi updates (DefiLlama TVL changes). "
-                    "Use this when the user asks about crypto news, recent updates, "
-                    "what's happening in crypto, or news about specific topics."
+                    "Use this when the user asks about: news, top stories, headlines, "
+                    "what's happening in crypto, recent updates, breaking news, or stories."
                 ),
                 parameters=[
                     ToolParameter(
