@@ -247,8 +247,9 @@ class ToolRegistry:
             ToolDefinition(
                 name="get_news",
                 description=(
-                    "Fetch recent cryptocurrency news articles. "
-                    "Returns news items with titles, summaries, sentiment, and related tokens. "
+                    "Fetch recent cryptocurrency news with source diversity. "
+                    "Returns a balanced mix of: news articles (CoinDesk, Cointelegraph, The Block), "
+                    "trending tokens (CoinGecko), and DeFi updates (DefiLlama TVL changes). "
                     "Use this when the user asks about crypto news, recent updates, "
                     "what's happening in crypto, or news about specific topics."
                 ),
@@ -265,7 +266,7 @@ class ToolRegistry:
                         type=ToolParameterType.INTEGER,
                         description="Maximum number of news items to return",
                         required=False,
-                        default=10,
+                        default=15,
                     ),
                     ToolParameter(
                         name="hours_back",
@@ -1828,32 +1829,58 @@ class ToolRegistry:
     async def _handle_get_news(
         self,
         category: Optional[str] = None,
-        limit: int = 10,
+        limit: int = 15,
         hours_back: int = 24,
     ) -> Dict[str, Any]:
-        """Handle recent news fetch."""
+        """Handle recent news fetch with source diversity."""
         from ...db import get_convex_client
         from ...services.news_fetcher.service import NewsFetcherService
+
+        # Friendly source name mapping
+        SOURCE_LABELS = {
+            "rss:coindesk": "CoinDesk",
+            "rss:cointelegraph": "Cointelegraph",
+            "rss:theblock": "The Block",
+            "rss:decrypt": "Decrypt",
+            "rss:bitcoinmagazine": "Bitcoin Magazine",
+            "coingecko:trending": "CoinGecko Trending",
+            "defillama:tvl": "DeFiLlama TVL",
+            "defillama:hacks": "DeFiLlama Security",
+        }
+
+        def get_source_type(source: str) -> str:
+            """Categorize source into type for display grouping."""
+            if source.startswith("rss:"):
+                return "news_article"
+            elif source.startswith("coingecko:"):
+                return "trending"
+            elif source.startswith("defillama:"):
+                return "defi_update"
+            return "other"
 
         try:
             # Initialize service with Convex client
             convex = get_convex_client()
             service = NewsFetcherService(convex_client=convex)
 
+            # Use diversified query for balanced source representation
             news_items = await service.get_recent_news(
                 category=category,
                 limit=limit,
                 since_hours=hours_back,
+                diversified=True,
             )
 
-            # Format news items for response
+            # Format news items for response with enhanced metadata
             formatted_items = []
             for item in news_items:
+                raw_source = item.get("source", "")
                 formatted_items.append({
                     "title": item.get("title", ""),
                     "summary": item.get("summary", ""),
                     "url": item.get("url", ""),
-                    "source": item.get("source", ""),
+                    "source": SOURCE_LABELS.get(raw_source, raw_source),
+                    "source_type": get_source_type(raw_source),
                     "published_at": item.get("publishedAt"),
                     "category": item.get("category", "general"),
                     "sentiment": item.get("sentiment", {}),
@@ -1863,10 +1890,17 @@ class ToolRegistry:
                     "importance": item.get("importance", {}).get("score", 0.5),
                 })
 
+            # Count sources for transparency
+            source_counts: Dict[str, int] = {}
+            for item in formatted_items:
+                st = item["source_type"]
+                source_counts[st] = source_counts.get(st, 0) + 1
+
             return {
                 "success": True,
                 "news": formatted_items,
                 "count": len(formatted_items),
+                "source_breakdown": source_counts,
                 "category_filter": category,
                 "hours_back": hours_back,
             }

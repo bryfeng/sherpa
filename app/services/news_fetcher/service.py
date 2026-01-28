@@ -327,17 +327,19 @@ class NewsFetcherService:
         category: Optional[str] = None,
         limit: int = 50,
         since_hours: int = 24,
+        diversified: bool = True,
     ) -> List[Dict[str, Any]]:
         """
-        Get recent news items.
+        Get recent news items with source diversity.
 
         Args:
             category: Optional category filter
             limit: Maximum items to return
             since_hours: Only return news from the last N hours
+            diversified: If True, use weighted algorithm to mix sources (RSS, CoinGecko, DefiLlama)
 
         Returns:
-            List of news items
+            List of news items with balanced source representation
         """
         if not self._convex:
             return []
@@ -354,7 +356,9 @@ class NewsFetcherService:
             if category:
                 params["category"] = category
 
-            return await self._convex.query("news:getRecent", params)
+            # Use diversified query by default to prevent single-source dominance
+            query_name = "news:getRecentDiversified" if diversified else "news:getRecent"
+            return await self._convex.query(query_name, params)
         except Exception as e:
             logger.error(f"Error getting recent news: {e}")
             return []
