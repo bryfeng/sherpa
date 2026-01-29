@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from decimal import Decimal
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from ..cache import cache
 from ..providers.alchemy import AlchemyProvider, UnsupportedChainError
@@ -14,6 +15,45 @@ from ..services.chains import get_chain_service
 from ..types import Portfolio, Source, TokenBalance, ToolEnvelope
 
 CACHE_TTL_SECONDS = 300
+
+# Stablecoins pegged to $1 USD - includes base symbols and common bridged variants
+# Pattern: Base symbols + common bridge suffixes (.e, .b, bridged, etc.)
+USD_STABLECOIN_SYMBOLS = {
+    "USDC", "USDT", "DAI", "FRAX", "LUSD", "BUSD", "TUSD", "USDP",
+    "GUSD", "USDD", "MIM", "FDUSD", "PYUSD", "CRVUSD", "GHO", "SUSD",
+    "DOLA", "MAI", "CUSD", "USDbC", "USDe",
+}
+
+# Regex pattern to match bridged stablecoin variants (e.g., USDC.e, USDT.b, etc.)
+BRIDGED_STABLECOIN_PATTERN = re.compile(
+    r"^(USDC|USDT|DAI|FRAX|BUSD|TUSD)[.\-_]?[eEbB]?$|"
+    r"^(USDC|USDT|DAI)\.e$|"  # Stargate bridged
+    r"^(USDC|USDT)\.b$|"  # Other bridges
+    r"^Bridged (USDC|USDT|DAI)",  # Name pattern
+    re.IGNORECASE
+)
+
+
+def _is_usd_stablecoin(symbol: str, name: Optional[str] = None) -> bool:
+    """Check if a token is a USD-pegged stablecoin."""
+    symbol_upper = symbol.upper().strip()
+
+    # Direct symbol match
+    if symbol_upper in USD_STABLECOIN_SYMBOLS:
+        return True
+
+    # Check bridged variants via regex
+    if BRIDGED_STABLECOIN_PATTERN.match(symbol_upper):
+        return True
+
+    # Check name for bridged stablecoins
+    if name:
+        name_lower = name.lower()
+        if any(stable.lower() in name_lower for stable in ["usdc", "usdt", "dai"]):
+            if any(bridge in name_lower for bridge in ["bridged", "stargate", "wormhole", "multichain"]):
+                return True
+
+    return False
 
 
 async def get_portfolio(address: str, chain: str = "ethereum") -> ToolEnvelope:
@@ -128,7 +168,12 @@ async def _evm_portfolio(address: str, chain: str, start_time: datetime) -> Tool
             name = metadata.get("name", "Unknown Token")
             decimals = metadata.get("decimals", 18)
             balance_formatted = f"{balance_wei / 10**decimals:.6f}"
+
+            # Get price from CoinGecko, or use $1 peg for stablecoins
             price = prices.get(token_addr.lower())
+            if price is None and _is_usd_stablecoin(symbol, name):
+                price = Decimal("1.0")
+
             value = (Decimal(balance_formatted) * price) if price else None
 
             tokens.append(
