@@ -145,7 +145,7 @@ class RhinestoneProvider(Provider):
                 "User-Agent": "Sherpa/1.0",
             }
             if self._config.api_key:
-                headers["Authorization"] = f"Bearer {self._config.api_key}"
+                headers["x-api-key"] = self._config.api_key
 
             self._client = httpx.AsyncClient(
                 base_url=self._config.base_url,
