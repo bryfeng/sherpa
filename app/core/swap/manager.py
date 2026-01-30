@@ -21,6 +21,7 @@ from ...providers.jupiter import (
     get_jupiter_swap_provider,
     NATIVE_SOL_MINT,
 )
+from ...services.tokens import get_token_service, TokenService
 from ...types.requests import ChatRequest
 from ..bridge.constants import NATIVE_PLACEHOLDER
 from ..bridge.chain_registry import get_registry_sync, ChainId
@@ -52,11 +53,13 @@ class SwapManager:
         logger: Optional[logging.Logger] = None,
         price_provider: Optional[CoingeckoProvider] = None,
         jupiter_provider: Optional[JupiterSwapProvider] = None,
+        token_service: Optional[TokenService] = None,
     ) -> None:
         self._logger = logger or logging.getLogger(__name__)
         self._pending: Dict[str, SwapState] = {}
         self._price_provider = price_provider or CoingeckoProvider()
         self._jupiter_provider = jupiter_provider
+        self._token_service = token_service or get_token_service()
 
     async def maybe_handle(
         self,
@@ -164,8 +167,9 @@ class SwapManager:
             origin_chain_id = chain_id
             destination_chain_id = chain_id
 
-        # Validate origin chain is supported
-        if origin_chain_id not in TOKEN_REGISTRY:
+        # Validate origin chain is supported (check TokenService first, fallback to TOKEN_REGISTRY)
+        origin_supported = await self._token_service.is_supported(origin_chain_id) or origin_chain_id in TOKEN_REGISTRY
+        if not origin_supported:
             return finalize_result(
                 'unsupported_chain',
                 message=f'Chain {self._chain_name(origin_chain_id)} is not yet supported for swaps. Try Ethereum, Base, Arbitrum, or Solana.',
@@ -173,7 +177,8 @@ class SwapManager:
             )
 
         # Validate destination chain for cross-chain swaps
-        if is_cross_chain and destination_chain_id not in TOKEN_REGISTRY:
+        dest_supported = await self._token_service.is_supported(destination_chain_id) or destination_chain_id in TOKEN_REGISTRY
+        if is_cross_chain and not dest_supported:
             return finalize_result(
                 'unsupported_chain',
                 message=f'Chain {self._chain_name(destination_chain_id)} is not yet supported for swaps. Try Ethereum, Base, Arbitrum, or Solana.',
@@ -205,13 +210,13 @@ class SwapManager:
                 amount_decimal = parsed_amount
 
         # Resolve tokens against their respective chains
-        token_in_meta = self._resolve_token(
+        token_in_meta = await self._resolve_token(
             origin_chain_id,
             token_in_symbol,
             portfolio_tokens_index,
             portfolio_alias_map,
         ) if token_in_symbol else None
-        token_out_meta = self._resolve_token(
+        token_out_meta = await self._resolve_token(
             destination_chain_id,
             token_out_symbol,
             portfolio_tokens_index if not is_cross_chain else None,  # Don't use portfolio for destination chain in cross-chain
@@ -220,8 +225,8 @@ class SwapManager:
 
         if token_in_meta is None or token_out_meta is None:
             if is_cross_chain:
-                origin_supported = self._supported_tokens_string(origin_chain_id, portfolio_tokens_index)
-                dest_supported = self._supported_tokens_string(destination_chain_id, None)
+                origin_supported = await self._supported_tokens_string(origin_chain_id, portfolio_tokens_index)
+                dest_supported = await self._supported_tokens_string(destination_chain_id, None)
                 return finalize_result(
                     'needs_token',
                     message=f'I need valid tokens for this cross-chain swap. On {self._chain_name(origin_chain_id)}: {origin_supported}. On {self._chain_name(destination_chain_id)}: {dest_supported}.',
@@ -232,7 +237,7 @@ class SwapManager:
                     },
                 )
             else:
-                supported = self._supported_tokens_string(origin_chain_id, portfolio_tokens_index)
+                supported = await self._supported_tokens_string(origin_chain_id, portfolio_tokens_index)
                 return finalize_result(
                     'needs_token',
                     message=f'I need the tokens for this swap. Supported examples on {self._chain_name(origin_chain_id)}: {supported}. Try "swap 0.25 ETH to USDC".',
@@ -768,17 +773,26 @@ class SwapManager:
         registry = get_registry_sync()
         return registry.get_chain_name(chain_id)
 
-    def _supported_tokens_string(
+    async def _supported_tokens_string(
         self,
         chain_id: ChainId,
         extra_tokens: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> str:
-        tokens = {symbol.upper(): meta for symbol, meta in TOKEN_REGISTRY.get(chain_id, {}).items()}
+        # Get tokens from TokenService (Convex-backed)
+        service_symbols = await self._token_service.get_supported_symbols(chain_id)
+        tokens = {s.upper() for s in service_symbols}
+
+        # Fallback to TOKEN_REGISTRY for backward compatibility
+        for symbol in TOKEN_REGISTRY.get(chain_id, {}).keys():
+            tokens.add(symbol.upper())
+
+        # Add extra tokens from portfolio
         if extra_tokens:
-            for symbol, meta in extra_tokens.items():
-                tokens.setdefault(symbol.upper(), meta)
+            for symbol in extra_tokens.keys():
+                tokens.add(symbol.upper())
+
         default_token = 'SOL' if is_solana_chain(chain_id) else 'ETH'
-        return ', '.join(sorted(tokens.keys())) if tokens else default_token
+        return ', '.join(sorted(tokens)) if tokens else default_token
 
     def _parse_swap_request(
         self,
@@ -860,7 +874,7 @@ class SwapManager:
 
         return amount, token_in, token_out, amount_currency
 
-    def _resolve_token(
+    async def _resolve_token(
         self,
         chain_id: ChainId,
         token_hint: Optional[str],
@@ -869,18 +883,49 @@ class SwapManager:
     ) -> Optional[Dict[str, Any]]:
         if not token_hint:
             return None
-        alias_map = TOKEN_ALIAS_MAP.get(chain_id, {})
+
         hint_lower = token_hint.lower()
-        symbol = alias_map.get(hint_lower)
-        if not symbol and extra_aliases:
+
+        # 1. Try TokenService first (Convex-backed, includes aliases)
+        # Convert extra_tokens dict to list format for portfolio_tokens param
+        portfolio_list = None
+        if extra_tokens:
+            portfolio_list = [
+                {**meta, 'chain_id': chain_id}
+                for meta in extra_tokens.values()
+            ]
+
+        token_config = await self._token_service.resolve_token(
+            chain_id,
+            token_hint,
+            portfolio_tokens=portfolio_list,
+        )
+
+        if token_config:
+            return {
+                'symbol': token_config.symbol,
+                'address': token_config.address,
+                'decimals': token_config.decimals,
+                'is_native': token_config.is_native,
+                'name': token_config.name,
+            }
+
+        # 2. Fallback: check extra_aliases from portfolio
+        symbol = None
+        if extra_aliases:
             symbol = extra_aliases.get(hint_lower)
+
+        # 3. Fallback: check global aliases
         if not symbol:
             global_symbol = GLOBAL_TOKEN_ALIASES.get(hint_lower)
             if global_symbol:
                 symbol = global_symbol
+
+        # 4. Fallback: use hint as symbol
         if not symbol:
             symbol = token_hint.upper()
 
+        # 5. Check extra_tokens (portfolio)
         if extra_tokens and symbol in extra_tokens:
             token_meta = extra_tokens[symbol]
             return {
@@ -891,10 +936,21 @@ class SwapManager:
                 'name': token_meta.get('name'),
             }
 
+        # 6. Final fallback: TOKEN_REGISTRY (deprecated, for backward compat)
         registry = TOKEN_REGISTRY.get(chain_id, {})
         if symbol not in registry:
+            # Try alias map as last resort
+            alias_map = TOKEN_ALIAS_MAP.get(chain_id, {})
+            resolved_symbol = alias_map.get(hint_lower)
+            if resolved_symbol and resolved_symbol in registry:
+                symbol = resolved_symbol
+            else:
+                return None
+
+        token_meta = registry.get(symbol)
+        if not token_meta:
             return None
-        token_meta = registry[symbol]
+
         return {
             'symbol': token_meta['symbol'],
             'address': token_meta['address'],

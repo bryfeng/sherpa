@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Dict, Literal, Tuple, Union
 
 from ..bridge.constants import NATIVE_PLACEHOLDER
@@ -11,6 +12,55 @@ from ..bridge.chain_registry import (
     get_chain_metadata,
     ChainId,
 )
+
+
+# =============================================================================
+# DEPRECATION WARNING
+# =============================================================================
+# TOKEN_REGISTRY is deprecated and will be removed in a future release.
+# Use the TokenService from app.services.tokens instead:
+#
+#   from app.services.tokens import get_token_service
+#   token_service = get_token_service()
+#   token = await token_service.resolve_token(chain_id, "usdc")
+#
+# The TokenService provides Convex-backed token resolution with:
+# - Dynamic updates without code deployment
+# - Admin management via Convex dashboard
+# - 5-minute cache for performance
+# =============================================================================
+
+
+class _DeprecatedTokenRegistry(dict):
+    """
+    Wrapper around TOKEN_REGISTRY that emits deprecation warnings.
+
+    Use get_token_service() from app.services.tokens instead.
+    """
+
+    _warned = False
+
+    def _warn_once(self) -> None:
+        if not _DeprecatedTokenRegistry._warned:
+            warnings.warn(
+                "TOKEN_REGISTRY is deprecated. Use get_token_service() from "
+                "app.services.tokens instead for Convex-backed token resolution.",
+                DeprecationWarning,
+                stacklevel=4,
+            )
+            _DeprecatedTokenRegistry._warned = True
+
+    def __getitem__(self, key: Any) -> Any:
+        self._warn_once()
+        return super().__getitem__(key)
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        self._warn_once()
+        return super().get(key, default)
+
+    def __contains__(self, key: Any) -> bool:
+        self._warn_once()
+        return super().__contains__(key)
 
 # Solana-specific constants
 SOLANA_CHAIN_ID: Literal["solana"] = "solana"
@@ -105,7 +155,10 @@ SWAP_SOURCE = {'name': 'Relay', 'url': 'https://relay.link'}
 # Minimal token registry keyed by chain ID → token symbol → metadata.
 # Addresses intentionally lowercased to simplify comparisons.
 # Chain IDs: int for EVM, "solana" for Solana
-TOKEN_REGISTRY: Dict[Union[int, str], Dict[str, Dict[str, object]]] = {
+#
+# DEPRECATED: Use get_token_service() from app.services.tokens instead.
+# This registry is kept for backward compatibility during migration.
+_LEGACY_TOKEN_REGISTRY: Dict[Union[int, str], Dict[str, Dict[str, object]]] = {
     1: {  # Ethereum mainnet
         'ETH': {
             'symbol': 'ETH',
@@ -247,9 +300,15 @@ TOKEN_REGISTRY: Dict[Union[int, str], Dict[str, Dict[str, object]]] = {
     },
 }
 
-# Flattened alias map built at import time
+# Wrap legacy registry with deprecation warnings
+# Use get_token_service() from app.services.tokens instead
+TOKEN_REGISTRY: Dict[Union[int, str], Dict[str, Dict[str, object]]] = _DeprecatedTokenRegistry(
+    _LEGACY_TOKEN_REGISTRY
+)
+
+# Flattened alias map built at import time (using legacy registry, no warning)
 TOKEN_ALIAS_MAP: Dict[Union[int, str], Dict[str, str]] = {}
-for _chain_id, entries in TOKEN_REGISTRY.items():
+for _chain_id, entries in _LEGACY_TOKEN_REGISTRY.items():
     alias_map: Dict[str, str] = {}
     for symbol, metadata in entries.items():
         alias_map[symbol.lower()] = symbol
