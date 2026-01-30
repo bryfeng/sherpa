@@ -145,18 +145,38 @@ class SwapManager:
                 message='I can prepare a Relay swap, but I need the wallet address that will sign it.',
             )
 
-        detected_chain = self._detect_chain(normalized_message)
-        chain_id = (
-            detected_chain
-            or context.get('chain_id')
-            or self._chain_from_default(default_chain)
-            or 1
-        )
+        # Detect chains - check for cross-chain swap first
+        origin_chain, destination_chain = self._detect_cross_chain(normalized_message)
+        is_cross_chain = origin_chain is not None and destination_chain is not None and origin_chain != destination_chain
 
-        if chain_id not in TOKEN_REGISTRY:
+        if is_cross_chain:
+            origin_chain_id = origin_chain
+            destination_chain_id = destination_chain
+        else:
+            # Single-chain swap - use detected chain or fallback
+            detected_chain = self._detect_chain(normalized_message)
+            chain_id = (
+                detected_chain
+                or context.get('chain_id')
+                or self._chain_from_default(default_chain)
+                or 1
+            )
+            origin_chain_id = chain_id
+            destination_chain_id = chain_id
+
+        # Validate origin chain is supported
+        if origin_chain_id not in TOKEN_REGISTRY:
             return finalize_result(
                 'unsupported_chain',
-                message='I can only quote swaps on Ethereum or Solana right now. Try "swap 0.5 ETH to USDC on Ethereum" or "swap 1 SOL to USDC on Solana".',
+                message=f'Chain {self._chain_name(origin_chain_id)} is not yet supported for swaps. Try Ethereum, Base, Arbitrum, or Solana.',
+                context_updates={'wallet_address': wallet},
+            )
+
+        # Validate destination chain for cross-chain swaps
+        if is_cross_chain and destination_chain_id not in TOKEN_REGISTRY:
+            return finalize_result(
+                'unsupported_chain',
+                message=f'Chain {self._chain_name(destination_chain_id)} is not yet supported for swaps. Try Ethereum, Base, Arbitrum, or Solana.',
                 context_updates={'wallet_address': wallet},
             )
 
@@ -184,36 +204,52 @@ class SwapManager:
             else:
                 amount_decimal = parsed_amount
 
+        # Resolve tokens against their respective chains
         token_in_meta = self._resolve_token(
-            chain_id,
+            origin_chain_id,
             token_in_symbol,
             portfolio_tokens_index,
             portfolio_alias_map,
         ) if token_in_symbol else None
         token_out_meta = self._resolve_token(
-            chain_id,
+            destination_chain_id,
             token_out_symbol,
-            portfolio_tokens_index,
-            portfolio_alias_map,
+            portfolio_tokens_index if not is_cross_chain else None,  # Don't use portfolio for destination chain in cross-chain
+            portfolio_alias_map if not is_cross_chain else None,
         ) if token_out_symbol else None
 
         if token_in_meta is None or token_out_meta is None:
-            supported = self._supported_tokens_string(chain_id, portfolio_tokens_index)
-            return finalize_result(
-                'needs_token',
-                message=f'I need the tokens for this swap. Supported examples on {self._chain_name(chain_id)}: {supported}. Try “swap 0.25 ETH to USDC”.',
-                context_updates={
-                    'wallet_address': wallet,
-                    'chain_id': chain_id,
-                    'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
-                },
-            )
+            if is_cross_chain:
+                origin_supported = self._supported_tokens_string(origin_chain_id, portfolio_tokens_index)
+                dest_supported = self._supported_tokens_string(destination_chain_id, None)
+                return finalize_result(
+                    'needs_token',
+                    message=f'I need valid tokens for this cross-chain swap. On {self._chain_name(origin_chain_id)}: {origin_supported}. On {self._chain_name(destination_chain_id)}: {dest_supported}.',
+                    context_updates={
+                        'wallet_address': wallet,
+                        'chain_id': origin_chain_id,
+                        'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
+                    },
+                )
+            else:
+                supported = self._supported_tokens_string(origin_chain_id, portfolio_tokens_index)
+                return finalize_result(
+                    'needs_token',
+                    message=f'I need the tokens for this swap. Supported examples on {self._chain_name(origin_chain_id)}: {supported}. Try "swap 0.25 ETH to USDC".',
+                    context_updates={
+                        'wallet_address': wallet,
+                        'chain_id': origin_chain_id,
+                        'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
+                    },
+                )
 
-        if token_in_meta['symbol'] == token_out_meta['symbol']:
+        # For same-chain swaps, tokens must be different
+        # For cross-chain swaps, same token symbol is allowed (bridging)
+        if not is_cross_chain and token_in_meta['symbol'] == token_out_meta['symbol']:
             return finalize_result(
                 'needs_token',
                 message='The input and output tokens are the same. Please choose two different assets for the swap.',
-                context_updates={'wallet_address': wallet, 'chain_id': chain_id},
+                context_updates={'wallet_address': wallet, 'chain_id': origin_chain_id},
             )
 
         if amount_decimal is None and percent_fraction is not None:
@@ -235,7 +271,7 @@ class SwapManager:
                     ),
                     context_updates={
                         'wallet_address': wallet,
-                        'chain_id': chain_id,
+                        'chain_id': origin_chain_id,
                         'token_in_symbol': token_in_meta['symbol'],
                         'token_out_symbol': token_out_meta['symbol'],
                         'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
@@ -254,7 +290,7 @@ class SwapManager:
                     ),
                     context_updates={
                         'wallet_address': wallet,
-                        'chain_id': chain_id,
+                        'chain_id': origin_chain_id,
                         'token_in_symbol': token_in_meta['symbol'],
                         'token_out_symbol': token_out_meta['symbol'],
                         'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
@@ -268,7 +304,7 @@ class SwapManager:
                     message='The USD amount looks invalid. Please share a positive dollar amount or specify the token amount directly.',
                     context_updates={
                         'wallet_address': wallet,
-                        'chain_id': chain_id,
+                        'chain_id': origin_chain_id,
                         'token_in_symbol': token_in_meta['symbol'],
                         'token_out_symbol': token_out_meta['symbol'],
                     },
@@ -284,7 +320,7 @@ class SwapManager:
                     ),
                     context_updates={
                         'wallet_address': wallet,
-                        'chain_id': chain_id,
+                        'chain_id': origin_chain_id,
                         'token_in_symbol': token_in_meta['symbol'],
                         'token_out_symbol': token_out_meta['symbol'],
                     },
@@ -294,10 +330,10 @@ class SwapManager:
         if amount_decimal is None:
             return finalize_result(
                 'needs_amount',
-                message=f'How much {token_in_meta["symbol"]} should I swap? For example: “swap 0.5 {token_in_meta["symbol"]} to {token_out_meta["symbol"]}”.',
+                message=f'How much {token_in_meta["symbol"]} should I swap? For example: "swap 0.5 {token_in_meta["symbol"]} to {token_out_meta["symbol"]}".',
                 context_updates={
                     'wallet_address': wallet,
-                    'chain_id': chain_id,
+                    'chain_id': origin_chain_id,
                     'token_in_symbol': token_in_meta['symbol'],
                     'token_out_symbol': token_out_meta['symbol'],
                     'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
@@ -311,7 +347,7 @@ class SwapManager:
                 message='The swap amount looks invalid or too small. Try a larger value.',
                 context_updates={
                     'wallet_address': wallet,
-                    'chain_id': chain_id,
+                    'chain_id': origin_chain_id,
                     'token_in_symbol': token_in_meta['symbol'],
                     'token_out_symbol': token_out_meta['symbol'],
                     'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
@@ -325,15 +361,15 @@ class SwapManager:
                 message='The swap amount is too small after accounting for token decimals. Try a larger amount.',
                 context_updates={
                     'wallet_address': wallet,
-                    'chain_id': chain_id,
+                    'chain_id': origin_chain_id,
                     'token_in_symbol': token_in_meta['symbol'],
                     'token_out_symbol': token_out_meta['symbol'],
                     'portfolio_tokens': portfolio_tokens_index if portfolio_tokens_index else None,
                 },
             )
 
-        # Dispatch to Jupiter for Solana swaps
-        if is_solana_chain(chain_id):
+        # Dispatch to Jupiter for Solana swaps (only for same-chain Solana)
+        if not is_cross_chain and is_solana_chain(origin_chain_id):
             return await self._handle_solana_swap(
                 wallet=wallet,
                 token_in_meta=token_in_meta,
@@ -346,13 +382,13 @@ class SwapManager:
                 percent_fraction=percent_fraction,
             )
 
-        # EVM swap via Relay
+        # EVM swap/bridge via Relay
         amount_base_units_str = str(amount_base_units)
 
         relay_payload: Dict[str, Any] = {
             'user': wallet,
-            'originChainId': chain_id,
-            'destinationChainId': chain_id,
+            'originChainId': origin_chain_id,
+            'destinationChainId': destination_chain_id,
             'originCurrency': token_in_meta['address'],
             'destinationCurrency': token_out_meta['address'],
             'recipient': wallet,
@@ -366,12 +402,15 @@ class SwapManager:
 
         panel_payload: Dict[str, Any] = {
             'status': 'pending',
-            'chain_id': chain_id,
-            'chain': self._chain_name(chain_id),
+            'chain_id': origin_chain_id,
+            'destination_chain_id': destination_chain_id if is_cross_chain else None,
+            'chain': self._chain_name(origin_chain_id),
+            'destination_chain': self._chain_name(destination_chain_id) if is_cross_chain else None,
+            'is_cross_chain': is_cross_chain,
             'wallet': {'address': wallet},
             'provider': 'relay',
             'relay_request': relay_payload,
-            'quote_type': 'swap',
+            'quote_type': 'bridge' if is_cross_chain else 'swap',
             'tokens': {
                 'input': token_in_meta,
                 'output': token_out_meta,
@@ -388,7 +427,8 @@ class SwapManager:
 
         context_updates = {
             'wallet_address': wallet,
-            'chain_id': chain_id,
+            'chain_id': origin_chain_id,
+            'destination_chain_id': destination_chain_id if is_cross_chain else None,
             'token_in_symbol': token_in_meta['symbol'],
             'token_out_symbol': token_out_meta['symbol'],
             'input_amount': str(amount_decimal),
@@ -562,9 +602,12 @@ class SwapManager:
             'open_wallet': 'Use your connected wallet to review and submit the prepared swap.',
         }
 
-        summary_lines = [
-            f"✅ Swap {self._decimal_to_str(routed_from_amount or amount_decimal)} {input_symbol} → {output_symbol} on {self._chain_name(chain_id)}"
-        ]
+        # Build summary message - include both chains for cross-chain swaps
+        if is_cross_chain:
+            swap_summary = f"✅ Bridge {self._decimal_to_str(routed_from_amount or amount_decimal)} {input_symbol} ({self._chain_name(origin_chain_id)}) → {output_symbol} ({self._chain_name(destination_chain_id)})"
+        else:
+            swap_summary = f"✅ Swap {self._decimal_to_str(routed_from_amount or amount_decimal)} {input_symbol} → {output_symbol} on {self._chain_name(origin_chain_id)}"
+        summary_lines = [swap_summary]
         if usd_amount is not None:
             try:
                 summary_lines.insert(0, f"🎯 Target ≈ ${float(usd_amount):.2f} of {input_symbol}")
@@ -588,9 +631,10 @@ class SwapManager:
         summary_lines.append('Confirm the swap in your connected wallet when prompted.')
 
         summary_reply = "\n".join(summary_lines)
-        summary_tool = (
-            f"Relay swap plan: {self._decimal_to_str(amount_decimal)} {input_symbol} → {output_symbol} on {self._chain_name(chain_id)}"
-        )
+        if is_cross_chain:
+            summary_tool = f"Relay bridge: {self._decimal_to_str(amount_decimal)} {input_symbol} ({self._chain_name(origin_chain_id)}) → {output_symbol} ({self._chain_name(destination_chain_id)})"
+        else:
+            summary_tool = f"Relay swap: {self._decimal_to_str(amount_decimal)} {input_symbol} → {output_symbol} on {self._chain_name(origin_chain_id)}"
 
         panel = {
             'id': 'relay_swap_quote',
@@ -671,6 +715,46 @@ class SwapManager:
         """Detect chain from message using dynamic registry."""
         registry = get_registry_sync()
         return registry.detect_chain_in_text(message)
+
+    def _detect_cross_chain(self, message: str) -> Tuple[Optional[ChainId], Optional[ChainId]]:
+        """Detect origin and destination chains for cross-chain swaps.
+
+        Parses patterns like:
+        - "from ink to mainnet"
+        - "on ink to ethereum"
+        - "USDC.e from ink to USDC on mainnet"
+
+        Returns (origin_chain_id, destination_chain_id). Either may be None.
+        """
+        registry = get_registry_sync()
+
+        # Detect origin chain (from X, on X before "to")
+        origin_chain = registry.detect_chain_with_preposition(message, ["from"])
+        if origin_chain is None:
+            # Check for "on <chain>" pattern before "to" keyword
+            on_match = re.search(r'\bon\s+(\w+)\s+to\b', message, re.IGNORECASE)
+            if on_match:
+                origin_chain = registry.get_chain_id(on_match.group(1))
+
+        # Detect destination chain (to X, on X after token)
+        destination_chain = registry.detect_chain_with_preposition(message, ["to"])
+        if destination_chain is None:
+            # Check for "to <token> on <chain>" pattern
+            on_match = re.search(r'\bto\s+\w+\s+on\s+(\w+)', message, re.IGNORECASE)
+            if on_match:
+                destination_chain = registry.get_chain_id(on_match.group(1))
+
+        # If only one chain detected, check if "to" preposition points to a chain
+        # after a token symbol (e.g., "swap USDC.e to USDC on mainnet")
+        if destination_chain is None and origin_chain is not None:
+            # The "to" might be for the token, not chain. Check for trailing chain.
+            trailing_chain = re.search(r'\b(?:on|to)\s+(\w+)\s*$', message, re.IGNORECASE)
+            if trailing_chain:
+                potential_chain = registry.get_chain_id(trailing_chain.group(1))
+                if potential_chain is not None and potential_chain != origin_chain:
+                    destination_chain = potential_chain
+
+        return (origin_chain, destination_chain)
 
     def _chain_from_default(self, chain_name: Optional[str]) -> Optional[ChainId]:
         """Resolve default chain name to chain ID using registry."""

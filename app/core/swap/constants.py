@@ -150,6 +150,29 @@ TOKEN_REGISTRY: Dict[Union[int, str], Dict[str, Dict[str, object]]] = {
             'aliases': {'wbtc', 'wrapped btc', 'btc'},
         },
     },
+    57073: {  # Ink
+        'ETH': {
+            'symbol': 'ETH',
+            'address': NATIVE_PLACEHOLDER,
+            'decimals': 18,
+            'is_native': True,
+            'aliases': {'eth', 'native'},
+        },
+        'WETH': {
+            'symbol': 'WETH',
+            'address': '0x4200000000000000000000000000000000000006',
+            'decimals': 18,
+            'is_native': False,
+            'aliases': {'weth', 'wrapped eth'},
+        },
+        'USDC.e': {
+            'symbol': 'USDC.e',
+            'address': '0xf1815bd50389c46847f0bda824ec8da914045d14',
+            'decimals': 6,
+            'is_native': False,
+            'aliases': {'usdc.e', 'usdc', 'bridged usdc', 'usdce'},
+        },
+    },
     'solana': {  # Solana
         'SOL': {
             'symbol': 'SOL',

@@ -596,6 +596,39 @@ TOKEN_REGISTRY: Dict[int, Dict[str, Dict[str, Any]]] = {
             "aliases": {"aave"},
         },
     },
+
+    # -------------------------------------------------------------------------
+    # Ink (Chain ID: 57073)
+    # -------------------------------------------------------------------------
+    57073: {
+        "ETH": {
+            "symbol": "ETH",
+            "name": "Ethereum",
+            "address": NATIVE_PLACEHOLDER,
+            "decimals": 18,
+            "is_native": True,
+            "coingecko_id": "ethereum",
+            "aliases": {"eth", "ether", "native"},
+        },
+        "WETH": {
+            "symbol": "WETH",
+            "name": "Wrapped Ether",
+            "address": "0x4200000000000000000000000000000000000006",
+            "decimals": 18,
+            "is_native": False,
+            "coingecko_id": "weth",
+            "aliases": {"weth", "wrapped eth"},
+        },
+        "USDC.e": {
+            "symbol": "USDC.e",
+            "name": "Bridged USDC (Stargate)",
+            "address": "0xf1815bd50389c46847f0bda824ec8da914045d14",
+            "decimals": 6,
+            "is_native": False,
+            "coingecko_id": "usd-coin",
+            "aliases": {"usdc.e", "usdc", "bridged usdc", "usdce"},
+        },
+    },
 }
 
 
