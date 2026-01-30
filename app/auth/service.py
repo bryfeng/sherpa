@@ -67,7 +67,9 @@ class AuthService:
         """
         chain_slug = normalize_chain(chain) if chain else None
         normalized_address = self._normalize_wallet_address(wallet_address, chain_slug)
-        nonce = secrets.token_urlsafe(32)
+        # SIWE spec (EIP-4361) requires alphanumeric nonce only - no special characters
+        # Use token_hex which generates hex characters (0-9, a-f)
+        nonce = secrets.token_hex(16)
         expires_at = datetime.utcnow() + timedelta(minutes=NONCE_EXPIRE_MINUTES)
 
         # Store nonce in Convex

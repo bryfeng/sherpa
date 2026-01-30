@@ -1,11 +1,15 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks, copy_trading, polymarket, smart_accounts, swig_wallets, permissions
 from .api import relay as relay_api
 from .agent_runtime.router import router as runtime_router
 from .agent_runtime import get_runtime, register_builtin_strategies
 from .middleware import RateLimitMiddleware
 from .config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
@@ -36,6 +40,30 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
+
+
+# Global exception handler to ensure CORS headers on 500 errors
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Catch unhandled exceptions and return proper error response.
+    This ensures CORS headers are included even on 500 errors.
+    """
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+
+    # Get origin from request for CORS
+    origin = request.headers.get("origin", "")
+    headers = {}
+    if origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers=headers,
+    )
+
 
 # Add rate limiting middleware (added after CORS so it runs first on requests)
 if settings.rate_limit_enabled:
