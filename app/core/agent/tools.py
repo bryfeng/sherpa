@@ -3214,6 +3214,7 @@ class ToolRegistry:
                     return (token, 18)
 
             from_address, from_decimals = get_token_address(token, from_chain_id, from_is_solana)
+            to_address, _ = get_token_address(token, to_chain_id, to_is_solana)
 
             # Convert amount to base units
             amount_decimal = Decimal(str(amount))
@@ -3226,12 +3227,15 @@ class ToolRegistry:
                 }
 
             # Build Relay quote request
+            from ..chain_types import RELAY_SOLANA_CHAIN_ID
+
             relay = RelayProvider()
             relay_payload = {
                 "user": wallet_address,
-                "originChainId": from_chain_id if not from_is_solana else 792703809,  # Relay's Solana chain ID
-                "destinationChainId": to_chain_id if not to_is_solana else 792703809,
+                "originChainId": from_chain_id if not from_is_solana else RELAY_SOLANA_CHAIN_ID,
+                "destinationChainId": to_chain_id if not to_is_solana else RELAY_SOLANA_CHAIN_ID,
                 "originCurrency": from_address,
+                "destinationCurrency": to_address,
                 "recipient": recipient,
                 "tradeType": "EXACT_INPUT",
                 "amount": str(amount_base_units),

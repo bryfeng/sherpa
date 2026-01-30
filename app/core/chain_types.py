@@ -24,6 +24,10 @@ ChainId = Union[int, Literal["solana"]]
 # Sentinel values for non-EVM chains
 SOLANA_CHAIN_ID: Literal["solana"] = "solana"
 
+# Relay uses a special chain ID for Solana (not a standard EVM chain ID)
+# See: https://docs.relay.link/resources/supported-chains
+RELAY_SOLANA_CHAIN_ID: int = 792703809
+
 # Default chain when none specified
 DEFAULT_CHAIN_ID: int = 1  # Ethereum mainnet
 
@@ -114,6 +118,7 @@ def chain_id_to_name(chain_id: ChainId) -> str:
 __all__ = [
     "ChainId",
     "SOLANA_CHAIN_ID",
+    "RELAY_SOLANA_CHAIN_ID",
     "DEFAULT_CHAIN_ID",
     "is_solana_chain",
     "is_evm_chain_id",
