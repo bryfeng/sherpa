@@ -297,6 +297,15 @@ def get_registry_sync() -> ChainRegistry:
     global _default_registry
     if _default_registry is None:
         _default_registry = ChainRegistry()
+
+    # Warn if registry is empty - this indicates init_chain_registry() wasn't called
+    if not _default_registry.is_loaded:
+        import logging
+        logging.getLogger(__name__).warning(
+            "ChainRegistry accessed before initialization. "
+            "Cross-chain detection will fail. Call init_chain_registry() at app startup."
+        )
+
     return _default_registry
 
 

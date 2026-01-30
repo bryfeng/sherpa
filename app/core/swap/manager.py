@@ -24,7 +24,7 @@ from ...providers.jupiter import (
 from ...services.tokens import get_token_service, TokenService
 from ...types.requests import ChatRequest
 from ..bridge.constants import NATIVE_PLACEHOLDER
-from ..bridge.chain_registry import get_registry_sync, ChainId
+from ..bridge.chain_registry import get_registry_sync, get_chain_registry, ChainId
 from .constants import (
     GLOBAL_TOKEN_ALIASES,
     SWAP_FOLLOWUP_KEYWORDS,
@@ -148,6 +148,15 @@ class SwapManager:
                 message='I can prepare a Relay swap, but I need the wallet address that will sign it.',
             )
 
+        # Ensure chain registry is loaded before chain detection
+        # This is async-safe: if already loaded, returns immediately
+        registry = get_registry_sync()
+        if not registry.is_loaded:
+            try:
+                await get_chain_registry()  # Async load if not initialized
+            except Exception as e:
+                self._logger.warning(f"Failed to load chain registry: {e}")
+
         # Detect chains - check for cross-chain swap first
         origin_chain, destination_chain = self._detect_cross_chain(normalized_message)
         is_cross_chain = origin_chain is not None and destination_chain is not None and origin_chain != destination_chain
@@ -248,14 +257,18 @@ class SwapManager:
                     },
                 )
 
-        # For same-chain swaps, tokens must be different
+        # For same-chain swaps, tokens must be different (compare by address, not symbol)
         # For cross-chain swaps, same token symbol is allowed (bridging)
-        if not is_cross_chain and token_in_meta['symbol'] == token_out_meta['symbol']:
-            return finalize_result(
-                'needs_token',
-                message='The input and output tokens are the same. Please choose two different assets for the swap.',
-                context_updates={'wallet_address': wallet, 'chain_id': origin_chain_id},
-            )
+        if not is_cross_chain:
+            # Compare by address to handle cases like USDC.e vs USDC on same chain
+            in_addr = str(token_in_meta.get('address', '')).lower()
+            out_addr = str(token_out_meta.get('address', '')).lower()
+            if in_addr and out_addr and in_addr == out_addr:
+                return finalize_result(
+                    'needs_token',
+                    message='The input and output tokens are the same. Please choose two different assets for the swap.',
+                    context_updates={'wallet_address': wallet, 'chain_id': origin_chain_id},
+                )
 
         if amount_decimal is None and percent_fraction is not None:
             portfolio_entry = None

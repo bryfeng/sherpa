@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import uuid
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class RelayProvider:
@@ -43,26 +48,70 @@ class RelayProvider:
         method: str,
         path: str,
         *,
-        json: Optional[Dict[str, Any]] = None,
+        json_payload: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
         **kwargs: Any,
     ) -> httpx.Response:
         merged_headers = {**self._headers(), **(headers or {})}
         last_error: Optional[Exception] = None
+        request_id = str(uuid.uuid4())[:8]  # Short ID for log correlation
+
+        # Log outgoing request
+        logger.info(
+            "[Relay:%s] %s %s",
+            request_id,
+            method,
+            path,
+        )
+        if json_payload:
+            logger.debug(
+                "[Relay:%s] Request payload: %s",
+                request_id,
+                json.dumps(json_payload, indent=2),
+            )
 
         for index, base_url in enumerate(self.base_urls):
             try:
                 async with httpx.AsyncClient(base_url=base_url, timeout=self.timeout_s) as client:
-                    response = await client.request(method, path, json=json, headers=merged_headers, **kwargs)
+                    response = await client.request(
+                        method, path, json=json_payload, headers=merged_headers, **kwargs
+                    )
+
+                    # Log response
+                    logger.debug(
+                        "[Relay:%s] Response %d: %s",
+                        request_id,
+                        response.status_code,
+                        response.text[:500] if response.text else "(empty)",
+                    )
+
                     response.raise_for_status()
                     return response
             except httpx.HTTPStatusError as exc:
+                # Log the error with full context
+                error_body = exc.response.text or exc.response.reason_phrase
+                logger.error(
+                    "[Relay:%s] HTTP %d error on %s %s: %s | Request: %s",
+                    request_id,
+                    exc.response.status_code,
+                    method,
+                    path,
+                    error_body[:500],
+                    json.dumps(json_payload) if json_payload else "(none)",
+                )
                 # Relay returns JSON error bodies with useful context; stop early unless we have another base URL to try.
                 if exc.response.status_code in (404, 405) and index < len(self.base_urls) - 1:
                     last_error = exc
                     continue
                 raise
             except httpx.RequestError as exc:
+                logger.error(
+                    "[Relay:%s] Request error on %s %s: %s",
+                    request_id,
+                    method,
+                    path,
+                    str(exc),
+                )
                 last_error = exc
                 continue
 
@@ -77,7 +126,7 @@ class RelayProvider:
         https://docs.relay.link/ (e.g. originChainId, destinationChainId, amount, etc.).
         """
 
-        resp = await self._request("POST", "/quote", json=payload)
+        resp = await self._request("POST", "/quote", json_payload=payload)
         return resp.json()
 
     async def get_request_signature(self, request_id: str) -> Dict[str, Any]:
