@@ -900,11 +900,12 @@ class ToolRegistry:
             ToolDefinition(
                 name="get_swap_quote",
                 description=(
-                    "Get a swap quote for exchanging tokens on EVM chains (Ethereum, Base, Arbitrum, "
-                    "Optimism, Polygon, etc.) using Relay. This is for same-chain swaps only. "
-                    "Returns the expected output amount, fees, and a transaction ready for signing. "
-                    "Supports all major EVM tokens including ETH, USDC, USDT, WBTC, and many others. "
-                    "NOTE: For Solana swaps, use get_solana_swap_quote. For cross-chain transfers, use get_bridge_quote."
+                    "Get a swap quote for exchanging tokens on a SINGLE EVM chain only. "
+                    "Use this ONLY when both input and output tokens are on THE SAME blockchain. "
+                    "Examples: 'swap ETH for USDC on Ethereum', 'exchange WBTC to ETH on Base'. "
+                    "DO NOT use this if user mentions two different chains - use get_bridge_quote instead. "
+                    "Supports ETH, USDC, USDT, WBTC, and many other EVM tokens. "
+                    "NOTE: For cross-chain (different source/destination chains), use get_bridge_quote."
                 ),
                 parameters=[
                     ToolParameter(
@@ -969,13 +970,14 @@ class ToolRegistry:
             ToolDefinition(
                 name="get_bridge_quote",
                 description=(
-                    "REQUIRED: Call this tool when the user wants to transfer/bridge tokens between different blockchains. "
-                    "Supports ALL EVM chains (Ethereum, Base, Arbitrum, Optimism, Polygon, Ink, zkSync, Scroll, etc.) "
-                    "and Solana. Examples that REQUIRE this tool: "
-                    "'bridge ETH to Base', 'transfer USDC from Ink to Ethereum', 'send tokens cross-chain', "
-                    "'move my USDC to mainnet', 'bridge from polygon to arbitrum'. "
-                    "Returns real quotes with fees and transactions ready for signing. "
-                    "NOTE: For same-chain swaps (no bridging), use get_swap_quote or get_solana_swap_quote instead."
+                    "REQUIRED: Call this tool for ANY cross-chain token operation - including swaps, bridges, or transfers "
+                    "where the source and destination are DIFFERENT blockchains. "
+                    "Supports ALL EVM chains (Ethereum/mainnet, Base, Arbitrum, Optimism, Polygon, Ink, zkSync, Scroll) and Solana. "
+                    "KEY PATTERN: If user mentions TWO DIFFERENT chains, use this tool. 'mainnet' = Ethereum. "
+                    "Examples: 'swap USDC.e on Ink to USDC on mainnet', 'bridge ETH to Base', 'transfer from Polygon to Arbitrum', "
+                    "'move USDC from Ink chain to Ethereum', 'swap tokens from Base to mainnet'. "
+                    "Returns real quotes with exact amounts and fees - NEVER guess or make up numbers. "
+                    "NOTE: For SAME-chain swaps only (e.g., ETH to USDC both on Ethereum), use get_swap_quote instead."
                 ),
                 parameters=[
                     ToolParameter(
