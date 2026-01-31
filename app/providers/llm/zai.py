@@ -16,17 +16,19 @@ from .base import (
     LLMProviderError,
     LLMProviderRateLimitError,
     LLMResponse,
+    ToolCall,
     ToolDefinition,
+    ToolResult,
 )
 
 
 class ZAIProvider(LLMProvider):
-    """Z AI chat completion provider.
+    """Z AI chat completion provider with function/tool calling support.
 
-    Note: ZAI does not support native tool/function calling.
+    GLM-4 models support OpenAI-compatible function calling.
     """
 
-    supports_tools: bool = False
+    supports_tools: bool = True
 
     def __init__(
         self,
@@ -79,17 +81,18 @@ class ZAIProvider(LLMProvider):
         tools: Optional[List[ToolDefinition]] = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        if tools:
-            raise LLMProviderError("ZAIProvider does not support tool calling")
-
         start_time = time.time()
 
         payload = self._build_payload(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            tools=tools,
             extra=kwargs,
         )
+
+        if tools:
+            self.logger.info(f"ZAI request with {len(tools)} tools: {[t.name for t in tools]}")
 
         data = await self._post(self._chat_completions_path, json=payload)
 
@@ -104,12 +107,42 @@ class ZAIProvider(LLMProvider):
         combined_segments = [segment for segment in (content, reasoning) if segment]
         combined_content = "\n".join(combined_segments)
 
+        # Extract tool calls if present (OpenAI-compatible format)
+        tool_calls_data = message.get("tool_calls") or []
+        tool_calls = []
+        for tc in tool_calls_data:
+            if tc.get("type") == "function":
+                func = tc.get("function", {})
+                # Parse arguments - they come as a JSON string
+                args_str = func.get("arguments", "{}")
+                try:
+                    args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                except json.JSONDecodeError:
+                    self.logger.warning(f"Failed to parse tool arguments: {args_str}")
+                    args = {}
+
+                tool_calls.append(ToolCall(
+                    id=tc.get("id", f"call_{len(tool_calls)}"),
+                    name=func.get("name", ""),
+                    arguments=args,
+                ))
+
+        if tool_calls:
+            self.logger.info(f"ZAI returned {len(tool_calls)} tool call(s): {[tc.name for tc in tool_calls]}")
+
         usage = data.get("usage", {})
         response_time = self._measure_time(start_time)
-        return self._create_response(
-            content=combined_content or content,
+
+        finish_reason = choice.get("finish_reason")
+        if tool_calls:
+            finish_reason = "tool_use"
+
+        return LLMResponse(
+            content=combined_content or content or None,
+            tool_calls=tool_calls if tool_calls else None,
             tokens_used=usage.get("total_tokens"),
-            finish_reason=choice.get("finish_reason"),
+            model=self.model,
+            finish_reason=finish_reason,
             response_time_ms=response_time,
         )
 
@@ -121,13 +154,13 @@ class ZAIProvider(LLMProvider):
         tools: Optional[List[ToolDefinition]] = None,
         **kwargs: Any,
     ) -> AsyncGenerator[str, None]:
-        if tools:
-            raise LLMProviderError("ZAIProvider does not support tool calling")
-
+        # Note: Streaming with tool calls may not work properly
+        # Tool calls are better handled through generate_response
         payload = self._build_payload(
             messages=messages,
             max_tokens=max_tokens,
             temperature=temperature,
+            tools=tools,
             extra=kwargs,
             stream=True,
         )
@@ -248,15 +281,50 @@ class ZAIProvider(LLMProvider):
         messages: List[LLMMessage],
         max_tokens: Optional[int],
         temperature: Optional[float],
+        tools: Optional[List[ToolDefinition]] = None,
         extra: Optional[Dict[str, Any]] = None,
         stream: bool = False,
     ) -> Dict[str, Any]:
+        # Convert messages to OpenAI-compatible format
+        converted_messages = []
+        for msg in messages:
+            if msg.role == "tool_result" and msg.tool_result:
+                # Tool result message
+                content = msg.tool_result.error if msg.tool_result.error else msg.tool_result.result
+                if not isinstance(content, str):
+                    content = json.dumps(content)
+                converted_messages.append({
+                    "role": "tool",
+                    "tool_call_id": msg.tool_result.tool_call_id,
+                    "content": content,
+                })
+            elif msg.role == "assistant" and msg.tool_calls:
+                # Assistant message with tool calls
+                tool_calls_formatted = []
+                for tc in msg.tool_calls:
+                    tool_calls_formatted.append({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        }
+                    })
+                converted_messages.append({
+                    "role": "assistant",
+                    "content": msg.content or "",
+                    "tool_calls": tool_calls_formatted,
+                })
+            else:
+                # Regular message
+                converted_messages.append({
+                    "role": msg.role,
+                    "content": msg.content or "",
+                })
+
         payload: Dict[str, Any] = {
             "model": self.model,
-            "messages": [
-                {"role": msg.role, "content": msg.content}
-                for msg in messages
-            ],
+            "messages": converted_messages,
         }
 
         if max_tokens is not None:
@@ -264,18 +332,57 @@ class ZAIProvider(LLMProvider):
         if temperature is not None:
             payload["temperature"] = temperature
 
+        # Add tools in OpenAI-compatible format
+        if tools:
+            payload["tools"] = [self._convert_tool_to_openai_format(t) for t in tools]
+            # Disable thinking when using tools to avoid confusion
+            payload["thinking"] = {"type": "disabled"}
+        else:
+            payload.setdefault("thinking", {"type": "enabled"})
+
         if extra:
             # Allow callers to override defaults but avoid mutating caller dict
             for key, value in extra.items():
                 if value is not None:
                     payload[key] = value
 
-        payload.setdefault("thinking", {"type": "enabled"})
-
         if stream:
             payload["stream"] = True
 
         return payload
+
+    def _convert_tool_to_openai_format(self, tool: ToolDefinition) -> Dict[str, Any]:
+        """Convert ToolDefinition to OpenAI-compatible function format."""
+        properties = {}
+        required = []
+
+        for param in tool.parameters:
+            prop = {
+                "type": param.type.value,
+                "description": param.description,
+            }
+            if param.enum:
+                prop["enum"] = param.enum
+            if param.default is not None:
+                prop["default"] = param.default
+
+            properties[param.name] = prop
+
+            if param.required:
+                required.append(param.name)
+
+        return {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
+            },
+        }
 
     def _iter_text_segments(self, payload: Dict[str, Any]) -> Iterable[str]:
         if not isinstance(payload, dict):
