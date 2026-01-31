@@ -3183,9 +3183,30 @@ class ToolRegistry:
 
             recipient = destination_address or wallet_address
 
-            # Resolve token to address on source chain
-            def get_token_address(token: str, chain_id, is_solana: bool) -> tuple:
-                """Get token address and decimals for a chain."""
+            # Equivalent token mapping for bridged variants
+            # Maps bridged token symbols to their canonical form
+            EQUIVALENT_TOKENS = {
+                "usdc.e": "usdc",
+                "usdc.b": "usdc",
+                "usdce": "usdc",
+                "usdt.e": "usdt",
+                "usdt.b": "usdt",
+                "weth.e": "weth",
+                "dai.e": "dai",
+            }
+
+            def get_token_address(token: str, chain_id, is_solana: bool, allow_equivalent: bool = False) -> tuple:
+                """Get token address and decimals for a chain.
+
+                Args:
+                    token: Token symbol or address
+                    chain_id: Target chain ID
+                    is_solana: Whether the chain is Solana
+                    allow_equivalent: If True, try equivalent tokens (e.g., USDC.e → USDC)
+
+                Returns:
+                    Tuple of (address, decimals) or (None, None) if not found
+                """
                 token_lower = token.lower()
 
                 if is_solana:
@@ -3197,8 +3218,15 @@ class ToolRegistry:
                     }
                     if token_lower in solana_tokens:
                         return solana_tokens[token_lower]
-                    # Assume it's already an address
-                    return (token, 9)
+                    # Try equivalent token
+                    if allow_equivalent and token_lower in EQUIVALENT_TOKENS:
+                        equiv = EQUIVALENT_TOKENS[token_lower]
+                        if equiv in solana_tokens:
+                            return solana_tokens[equiv]
+                    # Check if it's already a valid Solana address (base58, 32-44 chars)
+                    if len(token) >= 32 and len(token) <= 44 and token[0].isalnum():
+                        return (token, 9)
+                    return (None, None)
                 else:
                     # EVM token addresses
                     chain_tokens = TOKEN_REGISTRY.get(chain_id, {})
@@ -3206,15 +3234,40 @@ class ToolRegistry:
                         if sym.lower() == token_lower or token_lower in [a.lower() for a in meta.get("aliases", [])]:
                             return (meta["address"], meta["decimals"])
 
+                    # Try equivalent token (e.g., USDC.e → USDC)
+                    if allow_equivalent and token_lower in EQUIVALENT_TOKENS:
+                        equiv = EQUIVALENT_TOKENS[token_lower]
+                        for sym, meta in chain_tokens.items():
+                            if sym.lower() == equiv or equiv in [a.lower() for a in meta.get("aliases", [])]:
+                                return (meta["address"], meta["decimals"])
+
                     # Native ETH
                     if token_lower in ("eth", "ether", "native"):
                         return ("0x0000000000000000000000000000000000000000", 18)
 
-                    # Assume it's already an address
-                    return (token, 18)
+                    # Check if it's already a valid EVM address
+                    if token.startswith("0x") and len(token) == 42:
+                        return (token, 18)
 
-            from_address, from_decimals = get_token_address(token, from_chain_id, from_is_solana)
-            to_address, _ = get_token_address(token, to_chain_id, to_is_solana)
+                    return (None, None)
+
+            # Resolve source token (exact match required)
+            from_address, from_decimals = get_token_address(token, from_chain_id, from_is_solana, allow_equivalent=False)
+            if from_address is None:
+                return {
+                    "success": False,
+                    "error": f"Token '{token}' not found on source chain",
+                    "hint": f"Make sure the token exists on the source chain",
+                }
+
+            # Resolve destination token (allow equivalent tokens for bridging)
+            to_address, _ = get_token_address(token, to_chain_id, to_is_solana, allow_equivalent=True)
+            if to_address is None:
+                return {
+                    "success": False,
+                    "error": f"Token '{token}' (or equivalent) not found on destination chain",
+                    "hint": f"The destination chain may not support this token",
+                }
 
             # Convert amount to base units
             amount_decimal = Decimal(str(amount))

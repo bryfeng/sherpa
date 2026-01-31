@@ -239,6 +239,7 @@ class SwapManager:
             token_out_symbol,
             portfolio_tokens_index if not is_cross_chain else None,  # Don't use portfolio for destination chain in cross-chain
             portfolio_alias_map if not is_cross_chain else None,
+            allow_equivalent=is_cross_chain,  # For cross-chain, resolve USDC.e → USDC on destination
         ) if token_out_symbol else None
 
         if token_in_meta is None or token_out_meta is None:
@@ -896,19 +897,37 @@ class SwapManager:
 
         return amount, token_in, token_out, amount_currency
 
+    # Equivalent token mapping for bridged variants
+    # Maps bridged token symbols to their canonical form
+    EQUIVALENT_TOKENS = {
+        "usdc.e": "usdc",
+        "usdc.b": "usdc",
+        "usdce": "usdc",
+        "usdt.e": "usdt",
+        "usdt.b": "usdt",
+        "weth.e": "weth",
+        "dai.e": "dai",
+    }
+
     async def _resolve_token(
         self,
         chain_id: ChainId,
         token_hint: Optional[str],
         extra_tokens: Optional[Dict[str, Dict[str, Any]]] = None,
         extra_aliases: Optional[Dict[str, str]] = None,
+        allow_equivalent: bool = False,
     ) -> Optional[Dict[str, Any]]:
         if not token_hint:
             return None
 
         hint_lower = token_hint.lower()
 
-        # 1. Try TokenService first (Convex-backed, includes aliases)
+        # Build list of hints to try - original first, then equivalent if allowed
+        # For cross-chain destinations, USDC.e should resolve to USDC
+        hints_to_try = [hint_lower]
+        if allow_equivalent and hint_lower in self.EQUIVALENT_TOKENS:
+            hints_to_try.append(self.EQUIVALENT_TOKENS[hint_lower])
+
         # Convert extra_tokens dict to list format for portfolio_tokens param
         portfolio_list = None
         if extra_tokens:
@@ -917,68 +936,77 @@ class SwapManager:
                 for meta in extra_tokens.values()
             ]
 
-        token_config = await self._token_service.resolve_token(
-            chain_id,
-            token_hint,
-            portfolio_tokens=portfolio_list,
-        )
+        # Try each hint in order until we find a match
+        for current_hint in hints_to_try:
+            # 1. Try TokenService first (Convex-backed, includes aliases)
+            token_config = await self._token_service.resolve_token(
+                chain_id,
+                current_hint,
+                portfolio_tokens=portfolio_list,
+            )
 
-        if token_config:
-            return {
-                'symbol': token_config.symbol,
-                'address': token_config.address,
-                'decimals': token_config.decimals,
-                'is_native': token_config.is_native,
-                'name': token_config.name,
-            }
+            if token_config:
+                return {
+                    'symbol': token_config.symbol,
+                    'address': token_config.address,
+                    'decimals': token_config.decimals,
+                    'is_native': token_config.is_native,
+                    'name': token_config.name,
+                }
 
-        # 2. Fallback: check extra_aliases from portfolio
-        symbol = None
-        if extra_aliases:
-            symbol = extra_aliases.get(hint_lower)
+            # 2. Fallback: check extra_aliases from portfolio
+            symbol = None
+            if extra_aliases:
+                symbol = extra_aliases.get(current_hint)
 
-        # 3. Fallback: check global aliases
-        if not symbol:
-            global_symbol = GLOBAL_TOKEN_ALIASES.get(hint_lower)
-            if global_symbol:
-                symbol = global_symbol
+            # 3. Fallback: check global aliases
+            if not symbol:
+                global_symbol = GLOBAL_TOKEN_ALIASES.get(current_hint)
+                if global_symbol:
+                    symbol = global_symbol
 
-        # 4. Fallback: use hint as symbol
-        if not symbol:
-            symbol = token_hint.upper()
+            # 4. Fallback: use hint as symbol
+            if not symbol:
+                symbol = current_hint.upper()
 
-        # 5. Check extra_tokens (portfolio)
-        if extra_tokens and symbol in extra_tokens:
-            token_meta = extra_tokens[symbol]
-            return {
-                'symbol': token_meta['symbol'],
-                'address': token_meta['address'],
-                'decimals': token_meta['decimals'],
-                'is_native': token_meta.get('is_native', False),
-                'name': token_meta.get('name'),
-            }
+            # 5. Check extra_tokens (portfolio)
+            if extra_tokens and symbol in extra_tokens:
+                token_meta = extra_tokens[symbol]
+                return {
+                    'symbol': token_meta['symbol'],
+                    'address': token_meta['address'],
+                    'decimals': token_meta['decimals'],
+                    'is_native': token_meta.get('is_native', False),
+                    'name': token_meta.get('name'),
+                }
 
-        # 6. Final fallback: TOKEN_REGISTRY (deprecated, for backward compat)
-        registry = TOKEN_REGISTRY.get(chain_id, {})
-        if symbol not in registry:
-            # Try alias map as last resort
+            # 6. Final fallback: TOKEN_REGISTRY (deprecated, for backward compat)
+            registry = TOKEN_REGISTRY.get(chain_id, {})
+            if symbol in registry:
+                token_meta = registry.get(symbol)
+                if token_meta:
+                    return {
+                        'symbol': token_meta['symbol'],
+                        'address': token_meta['address'],
+                        'decimals': token_meta['decimals'],
+                        'is_native': token_meta.get('is_native', False),
+                    }
+
+            # Try alias map as last resort for this hint
             alias_map = TOKEN_ALIAS_MAP.get(chain_id, {})
-            resolved_symbol = alias_map.get(hint_lower)
+            resolved_symbol = alias_map.get(current_hint)
             if resolved_symbol and resolved_symbol in registry:
-                symbol = resolved_symbol
-            else:
-                return None
+                token_meta = registry.get(resolved_symbol)
+                if token_meta:
+                    return {
+                        'symbol': token_meta['symbol'],
+                        'address': token_meta['address'],
+                        'decimals': token_meta['decimals'],
+                        'is_native': token_meta.get('is_native', False),
+                    }
 
-        token_meta = registry.get(symbol)
-        if not token_meta:
-            return None
-
-        return {
-            'symbol': token_meta['symbol'],
-            'address': token_meta['address'],
-            'decimals': token_meta['decimals'],
-            'is_native': token_meta.get('is_native', False),
-        }
+        # No match found for any hint
+        return None
 
     def _sanitize_amount(self, value: Decimal) -> Optional[Decimal]:
         try:
