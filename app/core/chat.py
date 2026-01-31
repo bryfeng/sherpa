@@ -252,26 +252,10 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
             request_chain = getattr(request, 'chain', None)
             effective_chain = portfolio_chain if (portfolio_chain and request_chain in (None, 'ethereum')) else request_chain
 
-            # Handle bridge quotes (special case, keyword-based for now)
-            bridge_quote = await agent.bridge_manager.maybe_handle(  # type: ignore[attr-defined]
-                request,
-                conversation_id,
-                wallet_address=wallet_address,
-                default_chain=effective_chain,
-            )
-            if bridge_quote:
-                tool_data['bridge_quote'] = bridge_quote
-
-            # Handle swap quotes (special case, keyword-based for now)
-            swap_quote = await agent.swap_manager.maybe_handle(  # type: ignore[attr-defined]
-                request,
-                conversation_id,
-                wallet_address=wallet_address,
-                default_chain=effective_chain,
-                portfolio_tokens=portfolio_tokens,
-            )
-            if swap_quote:
-                tool_data['swap_quote'] = swap_quote
+            # NOTE: Keyword-based bridge/swap managers DISABLED
+            # The LLM should use get_bridge_quote and get_swap_quote tools instead
+            # for better semantic understanding of user intent.
+            # See: get_bridge_quote, get_swap_quote, get_solana_swap_quote tools
 
             # ============================================================
             # Stream the response text in chunks for better UX
