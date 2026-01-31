@@ -230,7 +230,7 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
             # Get portfolio tokens and chain for bridge/swap handling
             portfolio_tokens = None
             portfolio_chain = None
-            portfolio_entry = tool_data.get('portfolio') if isinstance(tool_data, dict) else None
+            portfolio_entry = tool_data.get('get_portfolio') if isinstance(tool_data, dict) else None
             if isinstance(portfolio_entry, dict):
                 result = portfolio_entry.get('result')
                 if isinstance(result, dict):
