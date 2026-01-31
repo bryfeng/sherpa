@@ -750,6 +750,7 @@ class SwapManager:
         Parses patterns like:
         - "from ink to mainnet"
         - "on ink to ethereum"
+        - "on ink chain to mainnet"
         - "USDC.e from ink to USDC on mainnet"
 
         Returns (origin_chain_id, destination_chain_id). Either may be None.
@@ -759,8 +760,9 @@ class SwapManager:
         # Detect origin chain (from X, on X before "to")
         origin_chain = registry.detect_chain_with_preposition(message, ["from"])
         if origin_chain is None:
-            # Check for "on <chain>" pattern before "to" keyword
-            on_match = re.search(r'\bon\s+(\w+)\s+to\b', message, re.IGNORECASE)
+            # Check for "on <chain>" or "on <chain> chain" pattern before "to" keyword
+            # Handle both "on ink to" and "on ink chain to"
+            on_match = re.search(r'\bon\s+(\w+)(?:\s+chain)?\s+to\b', message, re.IGNORECASE)
             if on_match:
                 origin_chain = registry.get_chain_id(on_match.group(1))
 
