@@ -84,15 +84,20 @@ class AnthropicProvider(LLMProvider):
         try:
             # Convert messages to Anthropic format
             anthropic_messages = []
-            system_message = None
+            system_parts = []  # Collect all system messages
 
             for msg in messages:
                 if msg.role == "system":
-                    system_message = msg.content
+                    # Collect all system messages instead of overwriting
+                    if msg.content:
+                        system_parts.append(msg.content)
                 else:
                     converted = self._convert_message_to_anthropic(msg)
                     if converted:
                         anthropic_messages.append(converted)
+
+            # Combine all system messages with clear separators
+            system_message = "\n\n---\n\n".join(system_parts) if system_parts else None
 
             # Prepare request parameters
             request_params = {

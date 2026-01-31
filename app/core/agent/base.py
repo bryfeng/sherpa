@@ -234,6 +234,24 @@ class Agent:
             if history:
                 context_messages.append(LLMMessage(role="system", content=f"Conversation context: {history}"))
 
+        # Add explicit tool-use instruction
+        # This ensures the LLM knows it MUST call tools for real-time data
+        context_messages.append(LLMMessage(
+            role="system",
+            content=(
+                "TOOL USAGE REQUIREMENT:\n"
+                "You have access to tools for fetching real-time blockchain data. "
+                "When the user asks about swaps, bridges, portfolio, prices, or any blockchain data:\n"
+                "1. You MUST call the appropriate tool to get real data\n"
+                "2. NEVER make up prices, quotes, fees, or amounts - always use tool results\n"
+                "3. For cross-chain transfers (bridging): use get_bridge_quote\n"
+                "4. For same-chain swaps on EVM: use get_swap_quote\n"
+                "5. For Solana swaps: use get_solana_swap_quote\n"
+                "6. For portfolio/balance queries: use get_portfolio\n"
+                "If a tool call fails, report the error - do not make up data."
+            )
+        ))
+
         # Convert chat messages to LLM format
         for msg in request.messages:
             context_messages.append(LLMMessage(
@@ -425,13 +443,15 @@ class Agent:
 
         # Get tool definitions
         tools = self.tool_registry.get_definitions()
+        tool_names = [t.name for t in tools]
+        self.logger.info(f"ReAct loop starting with {len(tools)} tools: {tool_names}")
 
         # Start the ReAct loop
         current_messages = list(messages)
         final_response: Optional[LLMResponse] = None
 
         for iteration in range(self._max_tool_iterations):
-            self.logger.debug(f"ReAct loop iteration {iteration + 1}/{self._max_tool_iterations}")
+            self.logger.info(f"ReAct loop iteration {iteration + 1}/{self._max_tool_iterations}")
 
             # Get LLM response with tool definitions
             response = await self.llm_provider.generate_response(
@@ -443,11 +463,15 @@ class Agent:
 
             # If no tool calls, we're done
             if not response.tool_calls:
-                self.logger.debug("LLM finished without tool calls")
+                self.logger.info(
+                    "LLM finished without tool calls. Content preview: %s",
+                    (response.content or "")[:200]
+                )
                 final_response = response
                 break
 
-            self.logger.debug(f"LLM requested {len(response.tool_calls)} tool call(s)")
+            tool_call_names = [tc.name for tc in response.tool_calls]
+            self.logger.info(f"LLM requested {len(response.tool_calls)} tool call(s): {tool_call_names}")
 
             # Inject wallet address into tools that require it
             for tc in response.tool_calls:
@@ -1775,6 +1799,26 @@ class Agent:
         Scope:
         - Focus strictly on crypto portfolios, tokens, protocols, and wallet analytics.
         - Treat ambiguous requests (e.g., "rotate", "performance") as crypto portfolio topics by default.
+
+        CRITICAL - TOOL USAGE:
+        You have access to tools for fetching real-time data. You MUST use these tools instead of making up data:
+        - get_portfolio: Fetch wallet holdings and balances
+        - get_bridge_quote: Get quotes for cross-chain transfers (bridging tokens between different blockchains)
+        - get_swap_quote: Get quotes for same-chain token swaps (EVM chains)
+        - get_solana_swap_quote: Get quotes for Solana token swaps
+        - get_token_chart: Fetch price history and charts
+        - get_trending_tokens: Get currently trending tokens
+
+        NEVER make up or hallucinate:
+        - Token prices, amounts, or fees
+        - Bridge quotes or swap quotes
+        - Portfolio holdings or balances
+        - Transaction data
+
+        If the user asks about swapping, bridging, or transferring tokens:
+        1. ALWAYS call the appropriate tool (get_bridge_quote for cross-chain, get_swap_quote for same-chain)
+        2. Use the wallet address from context
+        3. Only respond with real data from the tool result
 
         Guardrails:
         - Never invent or assume specific holdings.

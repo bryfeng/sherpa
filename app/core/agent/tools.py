@@ -969,12 +969,13 @@ class ToolRegistry:
             ToolDefinition(
                 name="get_bridge_quote",
                 description=(
-                    "Get a quote for bridging/transferring tokens between different blockchains using Relay. "
-                    "Supports transfers between EVM chains (Ethereum, Base, Arbitrum, Optimism, Polygon, etc.) "
-                    "AND to/from Solana. Use this for cross-chain transfers like: "
-                    "ETH on Ethereum → ETH on Base, USDC on Arbitrum → USDC on Solana, etc. "
-                    "Returns the expected output amount, fees, and transaction(s) ready for signing. "
-                    "NOTE: For same-chain swaps, use get_swap_quote (EVM) or get_solana_swap_quote (Solana)."
+                    "REQUIRED: Call this tool when the user wants to transfer/bridge tokens between different blockchains. "
+                    "Supports ALL EVM chains (Ethereum, Base, Arbitrum, Optimism, Polygon, Ink, zkSync, Scroll, etc.) "
+                    "and Solana. Examples that REQUIRE this tool: "
+                    "'bridge ETH to Base', 'transfer USDC from Ink to Ethereum', 'send tokens cross-chain', "
+                    "'move my USDC to mainnet', 'bridge from polygon to arbitrum'. "
+                    "Returns real quotes with fees and transactions ready for signing. "
+                    "NOTE: For same-chain swaps (no bridging), use get_swap_quote or get_solana_swap_quote instead."
                 ),
                 parameters=[
                     ToolParameter(
@@ -987,8 +988,8 @@ class ToolRegistry:
                         name="from_chain",
                         type=ToolParameterType.STRING,
                         description=(
-                            "The source blockchain (e.g., 'ethereum', 'base', 'arbitrum', "
-                            "'optimism', 'polygon', 'solana')"
+                            "The source blockchain name (e.g., 'ethereum', 'base', 'arbitrum', "
+                            "'optimism', 'polygon', 'ink', 'zksync', 'solana', etc.)"
                         ),
                         required=True,
                     ),
@@ -996,8 +997,8 @@ class ToolRegistry:
                         name="to_chain",
                         type=ToolParameterType.STRING,
                         description=(
-                            "The destination blockchain (e.g., 'ethereum', 'base', 'arbitrum', "
-                            "'optimism', 'polygon', 'solana')"
+                            "The destination blockchain name (e.g., 'ethereum', 'base', 'arbitrum', "
+                            "'optimism', 'polygon', 'ink', 'zksync', 'solana', etc.)"
                         ),
                         required=True,
                     ),

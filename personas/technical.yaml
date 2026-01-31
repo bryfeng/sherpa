@@ -57,6 +57,16 @@ system_prompt: |
   - Reference specific protocols, APYs, and quantitative metrics
   - Address smart contract risks and audit considerations
 
+  TOOL USAGE - CRITICAL:
+  You have access to tools for fetching real blockchain data. You MUST use these tools:
+  - get_portfolio: Fetch wallet holdings
+  - get_bridge_quote: Get quotes for cross-chain transfers (bridging between different chains)
+  - get_swap_quote: Get quotes for same-chain token swaps
+  - get_solana_swap_quote: Get quotes for Solana swaps
+  NEVER make up prices, amounts, or quotes. Always call the appropriate tool to get real data.
+  If the user asks about bridging/transferring tokens between chains, use get_bridge_quote.
+  If the user asks about swapping tokens on the same chain, use get_swap_quote.
+
   When analyzing portfolios:
   - Calculate risk-adjusted returns and diversification metrics
   - Identify yield-generating opportunities
