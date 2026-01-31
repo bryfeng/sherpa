@@ -215,7 +215,16 @@ class Agent:
         if wallet_address:
             context_messages.append(LLMMessage(
                 role="system",
-                content=f"CONNECTED WALLET: {wallet_address} on {request.chain or 'ethereum'}. This wallet is already connected and authenticated. Use this address for ALL portfolio, swap, and wallet-related operations. DO NOT ask the user for their wallet address - you already have it."
+                content=(
+                    f"CRITICAL - USER'S WALLET ADDRESS: {wallet_address}\n"
+                    f"Chain context: {request.chain or 'ethereum'}\n"
+                    f"This wallet is ALREADY CONNECTED and authenticated to this session.\n"
+                    f"RULES:\n"
+                    f"1. ALWAYS use {wallet_address} for portfolio, swap, bridge, and wallet operations\n"
+                    f"2. NEVER ask the user for their wallet address - you have it above\n"
+                    f"3. If asked 'what is my wallet address', reply with: {wallet_address}\n"
+                    f"4. NEVER make up or hallucinate a different wallet address"
+                )
             ))
 
         # Add conversation history if context manager available
