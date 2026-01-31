@@ -124,10 +124,20 @@ class RelayProvider:
 
         `payload` should follow the schema documented at
         https://docs.relay.link/ (e.g. originChainId, destinationChainId, amount, etc.).
-        """
 
-        resp = await self._request("POST", "/quote", json_payload=payload)
-        return resp.json()
+        Uses the v2 API endpoint which provides better route coverage.
+        """
+        # Try v2 API first (used by Relay's frontend, better route support)
+        try:
+            resp = await self._request("POST", "/quote/v2", json_payload=payload)
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            # Fall back to v1 if v2 fails
+            if e.response.status_code >= 500:
+                logger.warning("Relay v2 API failed, falling back to v1: %s", e)
+                resp = await self._request("POST", "/quote", json_payload=payload)
+                return resp.json()
+            raise
 
     async def get_request_signature(self, request_id: str) -> Dict[str, Any]:
         """Fetch the attestation/signature for a quote if needed."""
