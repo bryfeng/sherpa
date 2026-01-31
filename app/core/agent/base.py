@@ -477,6 +477,15 @@ class Agent:
                 # Convert results to format expected by _format_response
                 self._map_tool_result_to_legacy_format(tc.name, result_data, tool_data)
 
+                # Persist portfolio data to conversation context for cross-turn memory
+                if tc.name == "get_portfolio" and isinstance(result_data, dict) and result_data.get('success'):
+                    portfolio_data = result_data.get('data')
+                    if portfolio_data and self.context_manager:
+                        try:
+                            await self.context_manager.integrate_portfolio_data(conversation_id, portfolio_data)
+                        except Exception as e:
+                            self.logger.debug(f"Failed to persist portfolio context: {e}")
+
             # Append assistant message with tool calls
             current_messages.append(LLMMessage(
                 role="assistant",

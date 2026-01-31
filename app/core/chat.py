@@ -227,18 +227,9 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
                 if wallet_address:
                     tool_data['_address'] = wallet_address
 
-            # Handle bridge quotes (special case, keyword-based for now)
-            bridge_quote = await agent.bridge_manager.maybe_handle(  # type: ignore[attr-defined]
-                request,
-                conversation_id,
-                wallet_address=wallet_address,
-                default_chain=getattr(request, 'chain', None),
-            )
-            if bridge_quote:
-                tool_data['bridge_quote'] = bridge_quote
-
-            # Get portfolio tokens for swap handling
+            # Get portfolio tokens and chain for bridge/swap handling
             portfolio_tokens = None
+            portfolio_chain = None
             portfolio_entry = tool_data.get('portfolio') if isinstance(tool_data, dict) else None
             if isinstance(portfolio_entry, dict):
                 result = portfolio_entry.get('result')
@@ -246,20 +237,37 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
                     data = result.get('data')
                     if isinstance(data, dict):
                         portfolio_tokens = data.get('tokens')
+                        portfolio_chain = data.get('chain')
             if portfolio_tokens is None and agent.context_manager:
                 try:
                     conversation = agent.context_manager._conversations.get(conversation_id)  # type: ignore[attr-defined]
                     if conversation and getattr(conversation, 'portfolio_context', None):
                         portfolio_tokens = conversation.portfolio_context.get('tokens')  # type: ignore[call-arg]
+                        if portfolio_chain is None:
+                            portfolio_chain = conversation.portfolio_context.get('chain')  # type: ignore[call-arg]
                 except Exception:  # pragma: no cover - best-effort only
                     portfolio_tokens = None
+
+            # Use portfolio chain if request chain is default, otherwise use request chain
+            request_chain = getattr(request, 'chain', None)
+            effective_chain = portfolio_chain if (portfolio_chain and request_chain in (None, 'ethereum')) else request_chain
+
+            # Handle bridge quotes (special case, keyword-based for now)
+            bridge_quote = await agent.bridge_manager.maybe_handle(  # type: ignore[attr-defined]
+                request,
+                conversation_id,
+                wallet_address=wallet_address,
+                default_chain=effective_chain,
+            )
+            if bridge_quote:
+                tool_data['bridge_quote'] = bridge_quote
 
             # Handle swap quotes (special case, keyword-based for now)
             swap_quote = await agent.swap_manager.maybe_handle(  # type: ignore[attr-defined]
                 request,
                 conversation_id,
                 wallet_address=wallet_address,
-                default_chain=getattr(request, 'chain', None),
+                default_chain=effective_chain,
                 portfolio_tokens=portfolio_tokens,
             )
             if swap_quote:

@@ -159,6 +159,20 @@ class SwapManager:
 
         # Detect chains - check for cross-chain swap first
         origin_chain, destination_chain = self._detect_cross_chain(normalized_message)
+
+        # Determine default/context chain for fallback
+        context_chain = context.get('chain_id')
+        default_chain_id = self._chain_from_default(default_chain)
+        fallback_chain = context_chain or default_chain_id or 1
+
+        # Fill in missing chains from context/default
+        if origin_chain is None and destination_chain is not None:
+            # Destination specified but not origin - use context/default as origin
+            origin_chain = fallback_chain
+        elif destination_chain is None and origin_chain is not None:
+            # Origin specified but not destination - use context/default as destination
+            destination_chain = fallback_chain
+
         is_cross_chain = origin_chain is not None and destination_chain is not None and origin_chain != destination_chain
 
         if is_cross_chain:
@@ -167,12 +181,7 @@ class SwapManager:
         else:
             # Single-chain swap - use detected chain or fallback
             detected_chain = self._detect_chain(normalized_message)
-            chain_id = (
-                detected_chain
-                or context.get('chain_id')
-                or self._chain_from_default(default_chain)
-                or 1
-            )
+            chain_id = detected_chain or fallback_chain
             origin_chain_id = chain_id
             destination_chain_id = chain_id
 
