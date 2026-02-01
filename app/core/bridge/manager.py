@@ -481,6 +481,9 @@ class BridgeManager:
             'tx_ready': bool(primary_tx),
         })
         if primary_tx:
+            # Ensure tx.chainId is the SOURCE chain (where transaction executes)
+            # Relay may return destination chainId, but bridge tx runs on origin chain
+            primary_tx['chainId'] = from_chain_id
             panel_payload['tx'] = primary_tx
         if approvals:
             panel_payload['approvals'] = approvals
