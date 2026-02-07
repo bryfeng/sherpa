@@ -13,10 +13,17 @@ For EVM chains, supports:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Dict, Optional, Tuple, Union
+
+try:
+    import structlog
+    _slog = structlog.stdlib.get_logger("dca.executor")
+except ImportError:
+    _slog = None  # type: ignore
 
 from .models import (
     DCAStrategy,
@@ -116,9 +123,23 @@ class DCAExecutor:
             ExecutionResult with status and details
         """
         logger.info(f"Executing DCA strategy {strategy.id}: {strategy.name}")
+        _start = time.perf_counter()
 
         config = strategy.config
         execution_number = strategy.stats.total_executions + 1
+        execution_method = "intent" if strategy.smart_session_id and RHINESTONE_AVAILABLE else "manual"
+
+        if _slog:
+            _slog.info(
+                "dca_execution_started",
+                strategy_id=strategy.id,
+                execution_number=execution_number,
+                method=execution_method,
+                from_token=config.from_token.symbol,
+                to_token=config.to_token.symbol,
+                amount_usd=float(config.amount_per_execution_usd),
+                chain_id=config.from_token.chain_id,
+            )
 
         # Create execution record
         execution_id = await self._create_execution_record(
@@ -192,6 +213,15 @@ class DCAExecutor:
 
             tx_result = await self._execute_swap(strategy, quote, user_op_signature=user_op_signature)
             if not tx_result.success:
+                duration_ms = round((time.perf_counter() - _start) * 1000, 1)
+                if _slog:
+                    _slog.warning(
+                        "dca_execution_failed",
+                        strategy_id=strategy.id,
+                        method=execution_method,
+                        duration_ms=duration_ms,
+                        error=tx_result.error,
+                    )
                 return await self._fail_execution(
                     execution_id,
                     strategy,
@@ -199,6 +229,17 @@ class DCAExecutor:
                 )
 
             # 7. Record success
+            duration_ms = round((time.perf_counter() - _start) * 1000, 1)
+            if _slog:
+                _slog.info(
+                    "dca_execution_completed",
+                    strategy_id=strategy.id,
+                    method=execution_method,
+                    duration_ms=duration_ms,
+                    tx_hash=tx_result.tx_hash,
+                    input_amount=float(tx_result.input_amount) if tx_result.input_amount else None,
+                    output_amount=float(tx_result.output_amount) if tx_result.output_amount else None,
+                )
             return await self._complete_execution(
                 execution_id,
                 strategy,
@@ -207,6 +248,15 @@ class DCAExecutor:
             )
 
         except Exception as e:
+            duration_ms = round((time.perf_counter() - _start) * 1000, 1)
+            if _slog:
+                _slog.error(
+                    "dca_execution_error",
+                    strategy_id=strategy.id,
+                    method=execution_method,
+                    duration_ms=duration_ms,
+                    error=str(e),
+                )
             logger.exception(f"DCA execution error: {e}")
             return await self._fail_execution(
                 execution_id,
@@ -655,12 +705,20 @@ class DCAExecutor:
                 error="Rhinestone not available",
             )
 
-        try:
-            config = strategy.config
-            chain_id = config.from_token.chain_id
+        config = strategy.config
+        chain_id = config.from_token.chain_id
+        ui_intent_id: Optional[str] = None
 
+        try:
             # Convert input amount to raw wei
             amount_raw = str(int(quote.input_amount * (10 ** config.from_token.decimals)))
+
+            # 1. Create intent record for UI tracking (pending status)
+            ui_intent_id = await self._create_ui_intent_record(
+                strategy=strategy,
+                quote=quote,
+                chain_id=chain_id,
+            )
 
             # Build and submit the DCA execution intent
             intent_builder = get_intent_builder_service()
@@ -678,6 +736,13 @@ class DCAExecutor:
 
             if not intent_result.success:
                 logger.error(f"DCA intent submission failed: {intent_result.error}")
+                # Mark UI intent as failed
+                if ui_intent_id:
+                    await self._update_ui_intent_status(
+                        ui_intent_id,
+                        status="failed",
+                        error_message=intent_result.error or "Intent submission failed",
+                    )
                 return SwapResult(
                     success=False,
                     error=intent_result.error or "Intent submission failed",
@@ -688,16 +753,37 @@ class DCAExecutor:
                 f"(strategy={strategy.id}, amount={quote.input_amount})"
             )
 
-            # Optionally wait for intent completion
-            # For DCA, we typically want to wait to get the actual tx hash
+            # 2. Update UI intent to executing status
+            if ui_intent_id:
+                await self._update_ui_intent_status(
+                    ui_intent_id,
+                    status="executing",
+                )
+
+            # Wait for intent completion to get the actual tx hash
             try:
                 final_result = await intent_builder.wait_for_intent(
                     intent_result.intent_id,
                     timeout_s=120.0,
                 )
 
+                tx_hash = final_result.tx_hashes[0] if final_result.tx_hashes else None
+
                 if final_result.status == IntentStatus.COMPLETED:
-                    tx_hash = final_result.tx_hashes[0] if final_result.tx_hashes else None
+                    # 3. Update UI intent to confirming, then completed
+                    if ui_intent_id:
+                        await self._update_ui_intent_status(
+                            ui_intent_id,
+                            status="confirming",
+                            tx_hash=tx_hash,
+                        )
+                        await self._update_ui_intent_status(
+                            ui_intent_id,
+                            status="completed",
+                            tx_hash=tx_hash,
+                            actual_value_usd=float(quote.input_amount),
+                            gas_usd=float(final_result.gas_cost_usd) if hasattr(final_result, 'gas_cost_usd') else None,
+                        )
 
                     # Record Smart Session usage
                     if strategy.smart_session_id:
@@ -713,6 +799,13 @@ class DCAExecutor:
                         output_amount=quote.expected_output_amount,
                     )
                 else:
+                    # Intent failed
+                    if ui_intent_id:
+                        await self._update_ui_intent_status(
+                            ui_intent_id,
+                            status="failed",
+                            error_message=final_result.error or "Intent execution failed",
+                        )
                     return SwapResult(
                         success=False,
                         error=final_result.error or "Intent execution failed",
@@ -721,7 +814,13 @@ class DCAExecutor:
             except RhinestoneError as e:
                 logger.error(f"Intent wait failed: {e}")
                 # Intent was submitted but we couldn't wait for completion
-                # Return partial success with the intent ID
+                # Mark as executing (will need manual resolution)
+                if ui_intent_id:
+                    await self._update_ui_intent_status(
+                        ui_intent_id,
+                        status="executing",
+                        error_message=f"Waiting timed out: {e}",
+                    )
                 return SwapResult(
                     success=True,
                     tx_hash=f"intent:{intent_result.intent_id}",
@@ -731,10 +830,82 @@ class DCAExecutor:
 
         except Exception as e:
             logger.error(f"DCA intent execution error: {e}")
+            # Mark UI intent as failed if we created one
+            if ui_intent_id:
+                await self._update_ui_intent_status(
+                    ui_intent_id,
+                    status="failed",
+                    error_message=str(e),
+                )
             return SwapResult(
                 success=False,
                 error=str(e),
             )
+
+    async def _create_ui_intent_record(
+        self,
+        strategy: DCAStrategy,
+        quote: ExecutionQuote,
+        chain_id: ChainId,
+    ) -> Optional[str]:
+        """Create an intent record in Convex for real-time UI tracking."""
+        try:
+            config = strategy.config
+            # Called by: frontend/convex/smartSessionIntents.ts:backendCreate
+            intent_id = await self._convex.mutation(
+                "smartSessionIntents:backendCreate",
+                {
+                    "smartSessionId": strategy.smart_session_id,
+                    "smartAccountAddress": strategy.wallet_address,
+                    "intentType": "dca_execution",
+                    "sourceType": "dca_strategy",
+                    "sourceId": strategy.id,
+                    "chainId": chain_id if isinstance(chain_id, int) else 1,  # Default to mainnet for non-int
+                    "estimatedValueUsd": float(quote.input_amount),
+                    "tokenIn": {
+                        "symbol": config.from_token.symbol,
+                        "address": config.from_token.address,
+                        "amount": str(quote.input_amount),
+                    },
+                    "tokenOut": {
+                        "symbol": config.to_token.symbol,
+                        "address": config.to_token.address,
+                        "amount": str(quote.expected_output_amount) if quote.expected_output_amount else None,
+                    },
+                },
+            )
+            logger.info(f"Created UI intent record: {intent_id}")
+            return intent_id
+        except Exception as e:
+            logger.warning(f"Failed to create UI intent record: {e}")
+            return None
+
+    async def _update_ui_intent_status(
+        self,
+        intent_id: str,
+        status: str,
+        tx_hash: Optional[str] = None,
+        actual_value_usd: Optional[float] = None,
+        gas_usd: Optional[float] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Update intent status in Convex for real-time UI updates."""
+        try:
+            # Called by: frontend/convex/smartSessionIntents.ts:backendUpdateStatus
+            await self._convex.mutation(
+                "smartSessionIntents:backendUpdateStatus",
+                {
+                    "id": intent_id,
+                    "status": status,
+                    "txHash": tx_hash,
+                    "actualValueUsd": actual_value_usd,
+                    "gasUsd": gas_usd,
+                    "errorMessage": error_message,
+                },
+            )
+            logger.debug(f"Updated UI intent {intent_id} to status: {status}")
+        except Exception as e:
+            logger.warning(f"Failed to update UI intent status: {e}")
 
     async def _record_smart_session_usage(
         self,

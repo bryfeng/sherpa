@@ -2,7 +2,8 @@
 Generic Strategy Executor - Phase 13.5
 
 Executes approved strategies from the generic strategies table.
-For Phase 1 (manual approval), this prepares transactions for user signing.
+- Phase 1 (manual approval): prepares transactions for user signing
+- Phase 2 (Smart Session): executes via Rhinestone intent (no wallet needed)
 """
 
 from __future__ import annotations
@@ -15,6 +16,14 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+# Check if Rhinestone is available at module load
+try:
+    from app.services.intent_builder import get_intent_builder_service, IntentBuilderResult
+    from app.providers.rhinestone import IntentStatus, RhinestoneError
+    RHINESTONE_AVAILABLE = True
+except ImportError:
+    RHINESTONE_AVAILABLE = False
 
 
 class ExecutionStatus(str, Enum):
@@ -141,6 +150,22 @@ class GenericStrategyExecutor:
             strategy_id = str(execution.get("strategyId", ""))
             wallet_address = execution.get("walletAddress", "")
             config = strategy.get("config", {})
+            smart_session_id = strategy.get("smartSessionId")
+
+            # If strategy has a Smart Session and doesn't require manual approval,
+            # execute via Rhinestone intent (no wallet signature needed)
+            if (
+                smart_session_id
+                and RHINESTONE_AVAILABLE
+                and not strategy.get("requiresManualApproval")
+            ):
+                return await self._execute_via_intent(
+                    execution_id=execution_id,
+                    strategy_id=strategy_id,
+                    wallet_address=wallet_address,
+                    config=config,
+                    smart_session_id=smart_session_id,
+                )
 
             # 2. Extract swap parameters from strategy config
             swap_params = self._extract_swap_params(config, wallet_address)
@@ -427,6 +452,215 @@ class GenericStrategyExecutor:
             "chainId": params.chain_id,
             "from": params.wallet_address,
         }
+
+    async def _execute_via_intent(
+        self,
+        execution_id: str,
+        strategy_id: str,
+        wallet_address: str,
+        config: Dict[str, Any],
+        smart_session_id: str,
+    ) -> ExecutionResult:
+        """
+        Execute a strategy via Rhinestone intent (Smart Session).
+
+        No wallet signature needed — the backend signs with the session key.
+        """
+        if not RHINESTONE_AVAILABLE:
+            return ExecutionResult(
+                success=False,
+                status=ExecutionStatus.FAILED,
+                execution_id=execution_id,
+                strategy_id=strategy_id,
+                error_message="Rhinestone not available",
+                error_code="RHINESTONE_UNAVAILABLE",
+            )
+
+        logger.info(f"Executing via intent: execution={execution_id}, session={smart_session_id}")
+
+        try:
+            # Extract swap params
+            swap_params = self._extract_swap_params(config, wallet_address)
+            if not swap_params:
+                return ExecutionResult(
+                    success=False,
+                    status=ExecutionStatus.FAILED,
+                    execution_id=execution_id,
+                    strategy_id=strategy_id,
+                    error_message="Could not extract swap parameters",
+                    error_code="INVALID_CONFIG",
+                )
+
+            # Transition to executing state
+            await self._convex.mutation(
+                "strategyExecutions:transitionState",
+                {
+                    "executionId": execution_id,
+                    "toState": "executing",
+                    "trigger": "intent_execution_started",
+                    "context": {"method": "rhinestone_intent"},
+                },
+            )
+
+            # Create UI intent record for tracking
+            ui_intent_id = None
+            try:
+                ui_intent_id = await self._convex.mutation(
+                    "smartSessionIntents:backendCreate",
+                    {
+                        "smartSessionId": smart_session_id,
+                        "smartAccountAddress": wallet_address,
+                        "intentType": "swap",
+                        "chainId": swap_params.chain_id,
+                        "sourceType": "manual",
+                        "sourceId": strategy_id,
+                        "estimatedValueUsd": float(swap_params.amount),
+                        "tokenIn": swap_params.from_token,
+                        "tokenOut": swap_params.to_token,
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create UI intent record: {e}")
+
+            # Build and submit the intent
+            intent_builder = get_intent_builder_service()
+            intent_result = await intent_builder.build_dca_execution_intent(
+                account_address=wallet_address,
+                strategy_id=strategy_id,
+                source_chains=[swap_params.chain_id],
+                target_chain=swap_params.chain_id,
+                token_in=swap_params.from_token,
+                token_out=swap_params.to_token,
+                amount=swap_params.amount,
+                session_id=smart_session_id,
+            )
+
+            if not intent_result.success:
+                error_msg = intent_result.error or "Intent submission failed"
+                logger.error(f"Intent submission failed: {error_msg}")
+                if ui_intent_id:
+                    await self._update_intent_status(ui_intent_id, "failed", error_message=error_msg)
+                return ExecutionResult(
+                    success=False,
+                    status=ExecutionStatus.FAILED,
+                    execution_id=execution_id,
+                    strategy_id=strategy_id,
+                    error_message=error_msg,
+                    error_code="INTENT_SUBMISSION_FAILED",
+                )
+
+            logger.info(f"Intent submitted: {intent_result.intent_id}")
+            if ui_intent_id:
+                await self._update_intent_status(ui_intent_id, "executing")
+
+            # Wait for intent completion
+            try:
+                final_result = await intent_builder.wait_for_intent(
+                    intent_result.intent_id,
+                    timeout_s=120.0,
+                )
+
+                tx_hash = final_result.tx_hashes[0] if final_result.tx_hashes else None
+
+                if final_result.status == IntentStatus.COMPLETED:
+                    if ui_intent_id:
+                        await self._update_intent_status(
+                            ui_intent_id, "completed", tx_hash=tx_hash,
+                        )
+
+                    # Mark execution as complete
+                    await self._convex.mutation(
+                        "strategyExecutions:complete",
+                        {
+                            "executionId": execution_id,
+                            "txHash": tx_hash or f"intent:{intent_result.intent_id}",
+                            "outputData": {"method": "rhinestone_intent"},
+                        },
+                    )
+
+                    return ExecutionResult(
+                        success=True,
+                        status=ExecutionStatus.COMPLETED,
+                        execution_id=execution_id,
+                        strategy_id=strategy_id,
+                        tx_hash=tx_hash,
+                        executed_at=datetime.now(timezone.utc),
+                    )
+                else:
+                    error_msg = final_result.error or "Intent execution failed"
+                    if ui_intent_id:
+                        await self._update_intent_status(ui_intent_id, "failed", error_message=error_msg)
+                    await self._convex.mutation(
+                        "strategyExecutions:fail",
+                        {
+                            "executionId": execution_id,
+                            "errorMessage": error_msg,
+                            "errorCode": "INTENT_FAILED",
+                            "recoverable": True,
+                        },
+                    )
+                    return ExecutionResult(
+                        success=False,
+                        status=ExecutionStatus.FAILED,
+                        execution_id=execution_id,
+                        strategy_id=strategy_id,
+                        error_message=error_msg,
+                        error_code="INTENT_FAILED",
+                    )
+
+            except RhinestoneError as e:
+                logger.error(f"Intent wait failed: {e}")
+                if ui_intent_id:
+                    await self._update_intent_status(ui_intent_id, "executing", error_message=f"Wait timed out: {e}")
+                # Intent was submitted but we couldn't track completion
+                return ExecutionResult(
+                    success=True,
+                    status=ExecutionStatus.MONITORING,
+                    execution_id=execution_id,
+                    strategy_id=strategy_id,
+                    tx_hash=f"intent:{intent_result.intent_id}",
+                )
+
+        except Exception as e:
+            logger.error(f"Intent execution error: {e}")
+            await self._convex.mutation(
+                "strategyExecutions:fail",
+                {
+                    "executionId": execution_id,
+                    "errorMessage": str(e),
+                    "errorCode": "INTENT_ERROR",
+                    "recoverable": True,
+                },
+            )
+            return ExecutionResult(
+                success=False,
+                status=ExecutionStatus.FAILED,
+                execution_id=execution_id,
+                strategy_id=strategy_id,
+                error_message=str(e),
+                error_code="INTENT_ERROR",
+            )
+
+    async def _update_intent_status(
+        self,
+        intent_id: str,
+        status: str,
+        tx_hash: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Update a UI intent record status in Convex."""
+        try:
+            await self._convex.mutation(
+                "smartSessionIntents:backendUpdateStatus",
+                {
+                    "id": intent_id,
+                    "status": status,
+                    **({"txHash": tx_hash} if tx_hash else {}),
+                    **({"errorMessage": error_message} if error_message else {}),
+                },
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update intent status: {e}")
 
 
 # Convenience function to get executor instance

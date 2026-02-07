@@ -1,15 +1,19 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks, copy_trading, polymarket, smart_accounts, swig_wallets, permissions
+from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks, copy_trading, polymarket, smart_accounts, swig_wallets, permissions, policy
 from .api import relay as relay_api
 from .agent_runtime.router import router as runtime_router
 from .agent_runtime import get_runtime, register_builtin_strategies
-from .middleware import RateLimitMiddleware
+from .middleware import RateLimitMiddleware, RequestLoggingMiddleware
+from .logging_config import setup_logging
 from .config import settings
-import logging
 
-logger = logging.getLogger(__name__)
+# Initialize structured logging before anything else
+setup_logging()
+
+import structlog
+logger = structlog.stdlib.get_logger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
@@ -69,6 +73,9 @@ async def global_exception_handler(request: Request, exc: Exception):
 if settings.rate_limit_enabled:
     app.add_middleware(RateLimitMiddleware)
 
+# Add structured request logging middleware
+app.add_middleware(RequestLoggingMiddleware)
+
 # Include routers
 app.include_router(health.router, tags=["Health"])
 app.include_router(tools.router, tags=["Tools"])
@@ -90,6 +97,7 @@ app.include_router(polymarket.router, tags=["Polymarket"])
 app.include_router(smart_accounts.router, tags=["Smart Accounts"])
 app.include_router(swig_wallets.router, tags=["Swig Wallets"])
 app.include_router(permissions.router, tags=["Permissions"])
+app.include_router(policy.router, tags=["Policy"])
 
 
 @app.get("/")

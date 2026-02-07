@@ -5,6 +5,7 @@ from .rate_limit import (
     rate_limit_middleware,
     get_rate_limiter,
 )
+from .logging_middleware import RequestLoggingMiddleware
 
 __all__ = [
     "RateLimiter",
@@ -12,4 +13,5 @@ __all__ = [
     "RateLimitMiddleware",
     "rate_limit_middleware",
     "get_rate_limiter",
+    "RequestLoggingMiddleware",
 ]
