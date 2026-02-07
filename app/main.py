@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks, copy_trading, polymarket, smart_accounts, swig_wallets, permissions, policy
+from .api import health, tools, chat, swap, conversations, entitlement, perps, llm, history_summary, auth, dca, news, webhooks, copy_trading, polymarket, smart_accounts, swig_wallets, permissions, policy, strategies
 from .api import relay as relay_api
 from .agent_runtime.router import router as runtime_router
 from .agent_runtime import get_runtime, register_builtin_strategies
@@ -98,6 +98,7 @@ app.include_router(smart_accounts.router, tags=["Smart Accounts"])
 app.include_router(swig_wallets.router, tags=["Swig Wallets"])
 app.include_router(permissions.router, tags=["Permissions"])
 app.include_router(policy.router, tags=["Policy"])
+app.include_router(strategies.router, tags=["Strategies"])
 
 
 @app.get("/")
