@@ -446,6 +446,42 @@ class ToolRegistry:
             requires_address=True,
         )
 
+        # Portfolio chains settings tool
+        self.register(
+            "update_portfolio_chains",
+            ToolDefinition(
+                name="update_portfolio_chains",
+                description=(
+                    "Update which blockchain networks are included in the user's portfolio view. "
+                    "Use this when the user wants to add or remove chains from their portfolio, "
+                    "enable or disable specific networks, or change their portfolio chain settings. "
+                    "Examples: 'Add Base to my portfolio', 'Remove Polygon from portfolio view', "
+                    "'Only show Ethereum holdings', 'Enable Arbitrum in my portfolio'."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="wallet_address",
+                        type=ToolParameterType.STRING,
+                        description="The wallet address to update portfolio chains for",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="chains",
+                        type=ToolParameterType.ARRAY,
+                        description=(
+                            "List of chain identifiers to enable in the portfolio view. "
+                            "Valid chains: ethereum, optimism, bnb, polygon, zksync, morph, base, "
+                            "arbitrum, avalanche, ink, linea, blast, scroll, zora. "
+                            "This replaces all current settings - include all chains the user wants enabled."
+                        ),
+                        required=True,
+                    ),
+                ],
+            ),
+            self._handle_update_portfolio_chains,
+            requires_address=True,
+        )
+
         self.register(
             "check_action_allowed",
             ToolDefinition(
@@ -1618,6 +1654,63 @@ class ToolRegistry:
             requires_address=True,
         )
 
+        # =====================================================================
+        # Transfer Tool
+        # =====================================================================
+
+        self.register(
+            "execute_transfer",
+            ToolDefinition(
+                name="execute_transfer",
+                description=(
+                    "Send tokens to another address. Builds a transfer transaction "
+                    "for the user to sign in their wallet. Supports native ETH and "
+                    "ERC20 token transfers on any EVM chain."
+                ),
+                parameters=[
+                    ToolParameter(
+                        name="wallet_address",
+                        type=ToolParameterType.STRING,
+                        description="The sender's wallet address (0x...)",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="to_address",
+                        type=ToolParameterType.STRING,
+                        description="The recipient's wallet address (0x...)",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="token",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "The token to send — symbol (ETH, USDC, WBTC) or "
+                            "contract address (0x...)"
+                        ),
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="amount",
+                        type=ToolParameterType.NUMBER,
+                        description="Amount to send in human-readable units (e.g., 0.5 for 0.5 ETH)",
+                        required=True,
+                    ),
+                    ToolParameter(
+                        name="chain",
+                        type=ToolParameterType.STRING,
+                        description=(
+                            "The blockchain to send on (e.g., 'ethereum', 'base', "
+                            "'arbitrum', 'optimism', 'polygon'). Defaults to 'ethereum'."
+                        ),
+                        required=False,
+                        default="ethereum",
+                    ),
+                ],
+            ),
+            self._handle_execute_transfer,
+            requires_address=True,
+        )
+
     # =========================================================================
     # Tool Handlers
     # =========================================================================
@@ -2174,6 +2267,62 @@ class ToolRegistry:
 
         except Exception as e:
             self.logger.error(f"Error updating risk policy: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def _handle_update_portfolio_chains(
+        self,
+        wallet_address: str,
+        chains: List[str],
+    ) -> Dict[str, Any]:
+        """Handle updating portfolio chain settings for a wallet."""
+        from ...db import get_convex_client
+
+        # Valid chain identifiers
+        valid_chains = {
+            "ethereum", "optimism", "bnb", "polygon", "zksync", "morph",
+            "base", "arbitrum", "avalanche", "ink", "linea", "blast",
+            "scroll", "zora", "solana"
+        }
+
+        try:
+            # Validate chains
+            if not chains or len(chains) == 0:
+                return {
+                    "success": False,
+                    "error": "At least one chain must be enabled",
+                }
+
+            # Normalize chain names (lowercase, strip whitespace)
+            normalized_chains = [c.lower().strip() for c in chains]
+
+            # Validate each chain
+            invalid_chains = [c for c in normalized_chains if c not in valid_chains]
+            if invalid_chains:
+                return {
+                    "success": False,
+                    "error": f"Invalid chain(s): {', '.join(invalid_chains)}. Valid chains are: {', '.join(sorted(valid_chains))}",
+                }
+
+            convex = get_convex_client()
+
+            # Update the user preferences in Convex
+            await convex.mutation(
+                "userPreferences:setEnabledChains",
+                {
+                    "walletAddress": wallet_address.lower(),
+                    "chains": normalized_chains,
+                },
+            )
+
+            return {
+                "success": True,
+                "wallet_address": wallet_address,
+                "enabled_chains": normalized_chains,
+                "message": f"Portfolio now showing {len(normalized_chains)} chain(s): {', '.join(normalized_chains)}",
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error updating portfolio chains: {e}")
             return {"success": False, "error": str(e)}
 
     async def _handle_check_action_allowed(
@@ -3116,6 +3265,166 @@ class ToolRegistry:
             return {"success": False, "error": str(e)}
 
     # =========================================================================
+    # Transfer Handler
+    # =========================================================================
+
+    async def _handle_execute_transfer(
+        self,
+        wallet_address: str,
+        to_address: str,
+        token: str,
+        amount: float,
+        chain: str = "ethereum",
+    ) -> Dict[str, Any]:
+        """Handle building a token transfer transaction."""
+        from decimal import Decimal
+        from ..bridge.chain_registry import get_chain_registry
+        from ..swap.constants import TOKEN_REGISTRY, TOKEN_ALIAS_MAP
+
+        try:
+            # Validate addresses
+            if not to_address.startswith("0x") or len(to_address) != 42:
+                return {
+                    "success": False,
+                    "error": f"Invalid recipient address: {to_address}",
+                    "hint": "Recipient must be a valid 0x EVM address (42 characters).",
+                }
+
+            if not wallet_address.startswith("0x") or len(wallet_address) != 42:
+                return {
+                    "success": False,
+                    "error": f"Invalid sender address: {wallet_address}",
+                }
+
+            # Resolve chain
+            registry = await get_chain_registry()
+            chain_id = registry.get_chain_id(chain.lower())
+            if chain_id is None:
+                return {
+                    "success": False,
+                    "error": f"Unknown chain: {chain}",
+                    "hint": "Supported chains include: ethereum, base, arbitrum, optimism, polygon",
+                }
+
+            if isinstance(chain_id, str) and chain_id.lower() == "solana":
+                return {
+                    "success": False,
+                    "error": "Solana transfers are not supported by this tool",
+                    "hint": "This tool supports EVM chains only.",
+                }
+
+            # Resolve token
+            def resolve_token(tok: str, cid: int) -> Optional[Dict[str, Any]]:
+                chain_tokens = TOKEN_REGISTRY.get(cid, {})
+                alias_map = TOKEN_ALIAS_MAP.get(cid, {})
+
+                if tok.startswith("0x") and len(tok) == 42:
+                    for sym, meta in chain_tokens.items():
+                        if str(meta.get("address", "")).lower() == tok.lower():
+                            return {"symbol": sym, **meta}
+                    return {"symbol": tok[:8], "address": tok, "decimals": 18, "is_native": False}
+
+                symbol = alias_map.get(tok.lower(), tok.upper())
+                if symbol in chain_tokens:
+                    return {"symbol": symbol, **chain_tokens[symbol]}
+
+                if tok.lower() in ("eth", "ether", "native"):
+                    return {
+                        "symbol": "ETH",
+                        "address": "0x0000000000000000000000000000000000000000",
+                        "decimals": 18,
+                        "is_native": True,
+                    }
+
+                return None
+
+            token_meta = resolve_token(token, chain_id)
+            if not token_meta:
+                return {
+                    "success": False,
+                    "error": f"Unknown token: {token}",
+                    "hint": "Try using the full contract address or a common symbol like ETH, USDC, USDT",
+                }
+
+            # Convert amount to base units
+            amount_decimal = Decimal(str(amount))
+            decimals = int(token_meta.get("decimals", 18))
+            amount_base_units = int(amount_decimal * (Decimal(10) ** decimals))
+
+            if amount_base_units <= 0:
+                return {
+                    "success": False,
+                    "error": "Amount must be greater than 0",
+                }
+
+            chain_name = registry.get_chain_name(chain_id)
+            is_native = token_meta.get("is_native", False)
+
+            # Build transaction data
+            if is_native:
+                # Native ETH transfer: send value directly
+                tx_data = {
+                    "to": to_address,
+                    "data": "0x",
+                    "value": hex(amount_base_units),
+                }
+            else:
+                # ERC20 transfer(address,uint256) — selector 0xa9059cbb
+                selector = "a9059cbb"
+                encoded_address = to_address[2:].lower().zfill(64)
+                encoded_amount = hex(amount_base_units)[2:].zfill(64)
+                data = "0x" + selector + encoded_address + encoded_amount
+
+                tx_data = {
+                    "to": token_meta["address"],  # ERC20 contract
+                    "data": data,
+                    "value": "0x0",
+                }
+
+            # Run policy check
+            policy_result = await self._handle_check_action_allowed(
+                wallet_address=wallet_address,
+                action_type="transfer",
+                value_usd=0,  # No USD estimate for raw transfers
+                chain_id=chain_id,
+                token_in=token_meta.get("symbol"),
+                contract_address=token_meta.get("address") if not is_native else None,
+            )
+
+            if policy_result.get("success") and not policy_result.get("approved", True):
+                violations = policy_result.get("violations", [])
+                return {
+                    "success": False,
+                    "error": "Transfer blocked by policy",
+                    "violations": violations,
+                    "hint": "Check your risk policy settings or contact support.",
+                }
+
+            return {
+                "success": True,
+                "type": "transfer",
+                "chain": chain_name,
+                "chain_id": chain_id,
+                "token": {
+                    "symbol": token_meta["symbol"],
+                    "address": token_meta["address"],
+                    "amount": str(amount),
+                    "amount_base_units": str(amount_base_units),
+                    "decimals": decimals,
+                },
+                "recipient": to_address,
+                "tx_data": tx_data,
+                "instructions": [
+                    f"Send {amount} {token_meta['symbol']} to {to_address[:6]}...{to_address[-4:]} on {chain_name}",
+                    "Sign the transaction in your wallet to execute.",
+                ],
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error building transfer: {e}")
+            return {"success": False, "error": str(e)}
+
+    # =========================================================================
     # Cross-Chain Bridge Handlers (via Relay)
     # =========================================================================
 
@@ -3309,22 +3618,56 @@ class ToolRegistry:
             to_decimals = currency_out.get("decimals", from_decimals)
             output_amount = Decimal(output_amount_raw) / (Decimal(10) ** to_decimals)
 
-            # Get fees
+            # Get fees breakdown
+            fees = quote.get("fees", {})
+            gas_fee = fees.get("gas", {})
+            relayer_fee = fees.get("relayer", {})
             total_fee_usd = Decimal(str(details.get("totalFeeUsd", "0")))
 
             # Get time estimate
             time_estimate = details.get("timeEstimate", 0)  # seconds
 
-            # Get steps/transactions
+            # Extract transactions from steps (frontend needs tx, approvals, etc.)
             steps = quote.get("steps", [])
+            transactions = []
+            approvals = []
+            primary_tx = None
+
+            for step in steps:
+                for item in step.get("items", []):
+                    data_obj = item.get("data") or {}
+                    if isinstance(data_obj, dict):
+                        # Transaction data (has 'to' and 'data' or 'value')
+                        if "to" in data_obj and ("data" in data_obj or "value" in data_obj):
+                            tx_entry = {
+                                "to": data_obj.get("to"),
+                                "data": data_obj.get("data"),
+                                "value": data_obj.get("value", "0"),
+                                "chainId": data_obj.get("chainId", from_chain_id),
+                                "gas": data_obj.get("gas") or data_obj.get("gasLimit"),
+                                "maxFeePerGas": data_obj.get("maxFeePerGas"),
+                                "maxPriorityFeePerGas": data_obj.get("maxPriorityFeePerGas"),
+                            }
+                            transactions.append(tx_entry)
+                            if primary_tx is None:
+                                primary_tx = tx_entry
+                        # Approval data
+                        elif "spender" in data_obj and ("amount" in data_obj or "value" in data_obj):
+                            approvals.append({
+                                "tokenAddress": data_obj.get("token") or from_address,
+                                "spenderAddress": data_obj.get("spender"),
+                                "amount": data_obj.get("amount") or data_obj.get("value"),
+                            })
 
             from_chain_name = registry.get_chain_name(from_chain_id) if not from_is_solana else "Solana"
             to_chain_name = registry.get_chain_name(to_chain_id) if not to_is_solana else "Solana"
 
-            return {
+            # Build response in format frontend expects
+            result = {
                 "success": True,
                 "provider": "relay",
                 "bridge_type": "cross_chain",
+                "quote_type": "bridge",
                 "from_chain": {
                     "name": from_chain_name,
                     "chain_id": from_chain_id,
@@ -3347,10 +3690,29 @@ class ToolRegistry:
                 },
                 "fees": {
                     "total_usd": str(total_fee_usd),
+                    "gas_usd": gas_fee.get("amountUsd"),
+                    "relayer_usd": relayer_fee.get("amountUsd"),
                 },
                 "time_estimate_seconds": time_estimate,
                 "steps_count": len(steps),
-                "quote_data": quote,  # Full quote for execution
+                # Frontend execution fields
+                "wallet": {"address": wallet_address},
+                "amounts": {
+                    "input_amount_wei": str(amount_base_units),
+                    "input_base_units": str(amount_base_units),
+                },
+                "breakdown": {
+                    "input": {
+                        "symbol": token.upper(),
+                        "amount": str(amount),
+                        "token_address": from_address,
+                    },
+                    "output": {
+                        "symbol": token.upper(),
+                        "amount_estimate": str(output_amount),
+                        "token_address": to_address,
+                    },
+                },
                 "instructions": [
                     f"Bridge {amount} {token.upper()} from {from_chain_name} to {to_chain_name}",
                     f"Expected output: ~{output_amount:.6f} {token.upper()}",
@@ -3358,7 +3720,24 @@ class ToolRegistry:
                     f"Estimated time: {time_estimate // 60} min {time_estimate % 60} sec" if time_estimate else "Time varies",
                     "Review and sign the transaction(s) in your wallet to execute the bridge.",
                 ],
+                "quote_data": quote,  # Full quote for debugging
             }
+
+            # Add transaction data if available (required for execution)
+            if primary_tx:
+                result["tx"] = primary_tx
+                result["tx_ready"] = True
+            else:
+                result["tx_ready"] = False
+
+            if approvals:
+                result["approval_data"] = approvals[0]  # Frontend expects single approval
+                result["approvals"] = approvals
+
+            if transactions:
+                result["transactions"] = transactions
+
+            return result
 
         except Exception as e:
             self.logger.error(f"Error in bridge quote: {e}")
