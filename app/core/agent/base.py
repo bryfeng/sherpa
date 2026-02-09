@@ -1239,6 +1239,30 @@ class Agent:
         if not message:
             return None
 
+        # Strategy / automation context — the user is creating a recurring
+        # strategy, not requesting an immediate swap/bridge quote.
+        strategy_markers = (
+            "strategy",
+            "dca",
+            "dollar cost",
+            "dollar-cost",
+            "recurring",
+            "automate",
+            "automation",
+            "schedule",
+            "every hour",
+            "every day",
+            "every week",
+            "daily",
+            "weekly",
+            "hourly",
+            "create a",
+            "set up a",
+            "setup a",
+        )
+        if any(marker in message for marker in strategy_markers):
+            return None
+
         info_markers = (
             "what is",
             "what are",
@@ -1356,6 +1380,10 @@ class Agent:
 
         # If execute_transfer ran, this is a transfer — not a missing quote.
         if tool_data.get("execute_transfer"):
+            return False
+
+        # If a strategy/DCA tool ran, the user is setting up automation.
+        if tool_data.get("create_strategy") or tool_data.get("create_dca_strategy"):
             return False
 
         has_quote, error = self._resolve_quote_tool_state(quote_kind, tool_data)
