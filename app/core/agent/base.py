@@ -744,10 +744,88 @@ class Agent:
         # Swap quote tool - creates panel for frontend execution
         elif tool_name == "get_swap_quote":
             if result_data.get('success'):
-                # Similar pattern for swap quotes
+                input_token = result_data.get('input_token', {})
+                output_token = result_data.get('output_token', {})
+                fees_info = result_data.get('fees', {})
+                chain_id = result_data.get('chain_id')
+                chain_name = result_data.get('chain', 'Unknown')
+
+                # Extract tx data from Relay quote steps
+                tx_data = None
+                quote_data = result_data.get('quote_data', {})
+                steps = quote_data.get('steps', [])
+                if steps:
+                    items = steps[0].get('items', [])
+                    if items:
+                        item = items[0]
+                        tx_data = item.get('data', {})
+
+                panel_payload = {
+                    'quote_type': 'swap',
+                    'provider': 'relay',
+                    'status': 'ok' if tx_data else 'quote_only',
+                    'tx_ready': bool(tx_data),
+                    'from_chain_id': chain_id,
+                    'from_chain': chain_name,
+                    'to_chain_id': chain_id,
+                    'to_chain': chain_name,
+                    'wallet': {'address': quote_data.get('details', {}).get('sender', '')},
+                    'amounts': {
+                        'input_amount': input_token.get('amount', '0'),
+                        'input_base_units': input_token.get('amount_base_units', '0'),
+                        'output_estimate': output_token.get('amount_estimate', '0'),
+                    },
+                    'breakdown': {
+                        'input': {
+                            'token_address': input_token.get('address', ''),
+                            'symbol': input_token.get('symbol', ''),
+                        },
+                        'output': {
+                            'token_address': output_token.get('address', ''),
+                            'symbol': output_token.get('symbol', ''),
+                        },
+                    },
+                    'fees': fees_info,
+                    'instructions': result_data.get('instructions', []),
+                }
+
+                # Add transaction data for execution
+                if tx_data:
+                    panel_payload['tx'] = {
+                        'to': tx_data.get('to', ''),
+                        'data': tx_data.get('data', ''),
+                        'value': tx_data.get('value', '0'),
+                        'chainId': chain_id,
+                    }
+
+                in_sym = input_token.get('symbol', 'TOKEN')
+                out_sym = output_token.get('symbol', 'TOKEN')
+                panel = {
+                    'id': 'relay_swap_quote',
+                    'kind': 'card',
+                    'title': f"Swap: {in_sym} → {out_sym}",
+                    'payload': panel_payload,
+                    'sources': [{'name': 'Relay', 'url': 'https://relay.link'}],
+                    'metadata': {
+                        'status': panel_payload['status'],
+                        'has_transactions': bool(tx_data),
+                    },
+                }
+
+                in_amount = input_token.get('amount', '?')
+                out_amount = output_token.get('amount_estimate', '?')
+                fee_usd = fees_info.get('total_usd', '?')
+
+                summary_lines = [
+                    f"Swap {in_amount} {in_sym} for ~{out_amount} {out_sym} on {chain_name}",
+                    f"Estimated fees: ${fee_usd}",
+                    "Review and sign the transaction in your wallet to execute.",
+                ]
+
                 tool_data['swap_quote'] = {
-                    'success': True,
-                    'data': result_data,
+                    'panel': panel,
+                    'summary_reply': '\n'.join(summary_lines),
+                    'summary_tool': f"Swap quote: {in_amount} {in_sym} → {out_sym}",
                 }
             else:
                 tool_data['swap_quote_error'] = result_data.get('error', 'Unknown error')
