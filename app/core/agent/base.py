@@ -439,6 +439,9 @@ class Agent:
                 max_tokens=4000,
                 temperature=0.7,
             )
+            quote_intent = self._detect_quote_intent(request)
+            if quote_intent:
+                tool_data["_quote_intent"] = quote_intent
             return response, tool_data
 
         # Get tool definitions
@@ -542,6 +545,10 @@ class Agent:
                 max_tokens=4000,
                 temperature=0.7,
             )
+
+        quote_intent = self._detect_quote_intent(request)
+        if quote_intent:
+            tool_data["_quote_intent"] = quote_intent
 
         return final_response, tool_data
 
@@ -658,6 +665,92 @@ class Agent:
                 }
             else:
                 tool_data['strategy_executions_error'] = result_data.get('error', 'Unknown error')
+
+        # Bridge quote tool - creates panel for frontend execution
+        elif tool_name == "get_bridge_quote":
+            if result_data.get('success'):
+                from_chain = result_data.get('from_chain', {})
+                to_chain = result_data.get('to_chain', {})
+                token_info = result_data.get('token', {})
+                output_info = result_data.get('output', {})
+                fees_info = result_data.get('fees', {})
+
+                # Build panel payload with all data frontend needs for execution
+                panel_payload = {
+                    'quote_type': 'bridge',
+                    'provider': 'relay',
+                    'status': 'ok' if result_data.get('tx_ready') else 'quote_only',
+                    'tx_ready': result_data.get('tx_ready', False),
+                    'from_chain_id': from_chain.get('chain_id'),
+                    'from_chain': from_chain.get('name'),
+                    'to_chain_id': to_chain.get('chain_id'),
+                    'to_chain': to_chain.get('name'),
+                    'wallet': result_data.get('wallet', {}),
+                    'amounts': result_data.get('amounts', {}),
+                    'breakdown': result_data.get('breakdown', {}),
+                    'fees': fees_info,
+                    'time_estimate_seconds': result_data.get('time_estimate_seconds'),
+                    'instructions': result_data.get('instructions', []),
+                }
+
+                # Add transaction data for execution
+                if result_data.get('tx'):
+                    panel_payload['tx'] = result_data['tx']
+                if result_data.get('approval_data'):
+                    panel_payload['approval_data'] = result_data['approval_data']
+                if result_data.get('approvals'):
+                    panel_payload['approvals'] = result_data['approvals']
+                if result_data.get('transactions'):
+                    panel_payload['transactions'] = result_data['transactions']
+
+                # Build panel
+                from_symbol = token_info.get('symbol', 'TOKEN')
+                to_symbol = token_info.get('symbol', 'TOKEN')
+                panel = {
+                    'id': 'relay_bridge_quote',
+                    'kind': 'card',
+                    'title': f"Bridge: {from_symbol} → {to_symbol}",
+                    'payload': panel_payload,
+                    'sources': [{'name': 'Relay', 'url': 'https://relay.link'}],
+                    'metadata': {
+                        'status': panel_payload['status'],
+                        'has_transactions': result_data.get('tx_ready', False),
+                    },
+                }
+
+                # Build summary reply
+                amount = token_info.get('amount', '?')
+                output_amount = output_info.get('amount_estimate', '?')
+                fee_usd = fees_info.get('total_usd', '?')
+                time_sec = result_data.get('time_estimate_seconds', 0)
+
+                summary_lines = [
+                    f"Bridge {amount} {from_symbol} from {from_chain.get('name')} to {to_chain.get('name')}",
+                    f"Expected output: ~{output_amount} {to_symbol}",
+                    f"Estimated fees: ${fee_usd}",
+                ]
+                if time_sec:
+                    summary_lines.append(f"Estimated time: {time_sec // 60}m {time_sec % 60}s")
+                summary_lines.append("Review and sign the transaction in your wallet to execute.")
+
+                tool_data['bridge_quote'] = {
+                    'panel': panel,
+                    'summary_reply': '\n'.join(summary_lines),
+                    'summary_tool': f"Bridge quote: {amount} {from_symbol} → {to_symbol}",
+                }
+            else:
+                tool_data['bridge_quote_error'] = result_data.get('error', 'Unknown error')
+
+        # Swap quote tool - creates panel for frontend execution
+        elif tool_name == "get_swap_quote":
+            if result_data.get('success'):
+                # Similar pattern for swap quotes
+                tool_data['swap_quote'] = {
+                    'success': True,
+                    'data': result_data,
+                }
+            else:
+                tool_data['swap_quote_error'] = result_data.get('error', 'Unknown error')
 
     def _needs_tvl_data(self, request: ChatRequest) -> bool:
         """Determine if the request is asking for TVL/chart data (e.g., Uniswap TVL)."""
@@ -785,10 +878,13 @@ class Agent:
         
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         
+        # Apply guardrails before rendering content/panels.
+        self._apply_quote_guard(llm_response, tool_data)
+
         # Extract panels and sources from tool data
         panels = {}
         sources = []
-        reply_text = llm_response.content
+        reply_text = llm_response.content or ""
         
         if 'portfolio' in tool_data:
             portfolio_info = tool_data['portfolio']
@@ -1020,6 +1116,152 @@ class Agent:
             tokens_used=llm_response.tokens_used,
             processing_time_ms=processing_time
         )
+
+    def _detect_quote_intent(self, request: ChatRequest) -> Optional[str]:
+        """Heuristic detection for swap/bridge quote intent."""
+        if not request.messages:
+            return None
+        message = request.messages[-1].content.lower().strip()
+        if not message:
+            return None
+
+        info_markers = (
+            "what is",
+            "what are",
+            "what's",
+            "whats",
+            "how does",
+            "how do",
+            "how to",
+            "explain",
+            "guide",
+            "tutorial",
+            "tell me about",
+        )
+        action_markers = (
+            "swap",
+            "bridge",
+            "transfer",
+            "send",
+            "convert",
+            "exchange",
+            "trade",
+        )
+        quote_markers = (
+            "quote",
+            "rate",
+            "how much",
+            "estimate",
+            "estimated",
+            "fees",
+            "fee",
+        )
+        bridge_markers = (
+            "bridge",
+            "cross-chain",
+            "cross chain",
+            "mainnet",
+            "l1",
+            "l2",
+        )
+        swap_markers = (
+            "swap",
+            "convert",
+            "exchange",
+            "trade",
+        )
+        transfer_markers = (
+            "transfer",
+            "send",
+        )
+        # If the message contains a 0x address, "send/transfer" likely means a
+        # direct token transfer, not a bridge/swap quote.
+        direct_transfer_markers = ("0x",)
+
+        if any(marker in message for marker in info_markers) and any(marker in message for marker in action_markers):
+            return None
+
+        if not (any(marker in message for marker in quote_markers) or any(marker in message for marker in action_markers)):
+            return None
+
+        # Direct transfer to an address — not a quote intent
+        has_transfer = any(marker in message for marker in transfer_markers)
+        has_address = any(marker in message for marker in direct_transfer_markers)
+        if has_transfer and has_address and not any(marker in message for marker in bridge_markers) and not any(marker in message for marker in swap_markers):
+            return None
+
+        if any(marker in message for marker in bridge_markers) or has_transfer:
+            return "bridge"
+        if any(marker in message for marker in swap_markers):
+            return "swap"
+
+        return "swap"
+
+    def _build_missing_quote_reply(self, quote_kind: str) -> str:
+        """Standardized message when a quote tool was not called."""
+        action = "bridge" if quote_kind == "bridge" else "swap"
+        return (
+            f"I don’t have a live {action} quote yet because the quote tool wasn’t run. "
+            f"Tell me the amount and the source/destination chains (or the chain for a same-chain swap), "
+            f"and I’ll fetch a real-time {action} quote."
+        )
+
+    def _resolve_quote_tool_state(self, quote_kind: str, tool_data: Dict[str, Any]) -> tuple[bool, Optional[str]]:
+        """Check if a relevant quote tool ran successfully."""
+        legacy_key = "bridge_quote" if quote_kind == "bridge" else "swap_quote"
+        if tool_data.get(legacy_key):
+            return True, None
+
+        tool_names = []
+        if quote_kind == "bridge":
+            tool_names = ["get_bridge_quote"]
+        else:
+            tool_names = ["get_swap_quote", "get_solana_swap_quote"]
+
+        for tool_name in tool_names:
+            entry = tool_data.get(tool_name)
+            if not isinstance(entry, dict):
+                continue
+            result = entry.get("result")
+            if isinstance(result, dict):
+                if result.get("success") is True:
+                    return True, None
+                if result.get("success") is False:
+                    return False, result.get("error") or "Quote tool failed"
+
+        return False, None
+
+    def _apply_quote_guard(self, llm_response: LLMResponse, tool_data: Dict[str, Any]) -> bool:
+        """Override the response if a quote was requested but no tool ran."""
+        if tool_data.get("_quote_guard_applied"):
+            return False
+
+        quote_kind = tool_data.get("_quote_intent")
+        if not quote_kind:
+            return False
+
+        # If execute_transfer ran, this is a transfer — not a missing quote.
+        if tool_data.get("execute_transfer"):
+            return False
+
+        has_quote, error = self._resolve_quote_tool_state(quote_kind, tool_data)
+        if has_quote:
+            return False
+
+        if error:
+            reply = (
+                f"I couldn’t fetch a live {quote_kind} quote yet: {error}. "
+                f"Want me to try again or adjust the details?"
+            )
+            reason = "quote_tool_error"
+        else:
+            reply = self._build_missing_quote_reply(quote_kind)
+            reason = "missing_quote_tool"
+
+        llm_response.content = reply
+        tool_data["_quote_guard_applied"] = True
+        tool_data["_quote_guard_reason"] = reason
+        return True
 
     async def _update_conversation_state(
         self,
