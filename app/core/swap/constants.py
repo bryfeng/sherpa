@@ -203,6 +203,50 @@ _LEGACY_TOKEN_REGISTRY: Dict[Union[int, str], Dict[str, Dict[str, object]]] = {
             'aliases': {'wbtc', 'wrapped btc', 'btc'},
         },
     },
+    8453: {  # Base
+        'ETH': {
+            'symbol': 'ETH',
+            'address': NATIVE_PLACEHOLDER,
+            'decimals': 18,
+            'is_native': True,
+            'aliases': {'eth', 'native'},
+        },
+        'WETH': {
+            'symbol': 'WETH',
+            'address': '0x4200000000000000000000000000000000000006',
+            'decimals': 18,
+            'is_native': False,
+            'aliases': {'weth', 'wrapped eth'},
+        },
+        'USDC': {
+            'symbol': 'USDC',
+            'address': '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913',
+            'decimals': 6,
+            'is_native': False,
+            'aliases': {'usdc', 'usd coin'},
+        },
+        'USDbC': {
+            'symbol': 'USDbC',
+            'address': '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca',
+            'decimals': 6,
+            'is_native': False,
+            'aliases': {'usdbc', 'bridged usdc'},
+        },
+        'DAI': {
+            'symbol': 'DAI',
+            'address': '0x50c5725949a6f0c72e6c4a641f24049a917db0cb',
+            'decimals': 18,
+            'is_native': False,
+            'aliases': {'dai'},
+        },
+        'cbBTC': {
+            'symbol': 'cbBTC',
+            'address': '0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf',
+            'decimals': 8,
+            'is_native': False,
+            'aliases': {'cbbtc', 'coinbase btc', 'btc'},
+        },
+    },
     57073: {  # Ink
         'ETH': {
             'symbol': 'ETH',

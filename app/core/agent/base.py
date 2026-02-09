@@ -760,6 +760,24 @@ class Agent:
                         item = items[0]
                         tx_data = item.get('data', {})
 
+                # Extract fee/eta from Relay details
+                details = quote_data.get('details', {})
+                total_fee_usd = fees_info.get('total_usd')
+                gas_fee_raw = details.get('feeBreakdown', [{}])
+                gas_usd = None
+                for fee_entry in (gas_fee_raw if isinstance(gas_fee_raw, list) else []):
+                    if fee_entry.get('kind') == 'gas':
+                        gas_usd = fee_entry.get('amountUsd')
+                        break
+                if gas_usd is None:
+                    gas_usd = total_fee_usd  # fallback to total
+                eta_seconds = details.get('timeEstimate')
+
+                in_sym = input_token.get('symbol', 'TOKEN')
+                out_sym = output_token.get('symbol', 'TOKEN')
+                in_amount = input_token.get('amount', '0')
+                out_amount = output_token.get('amount_estimate', '0')
+
                 panel_payload = {
                     'quote_type': 'swap',
                     'provider': 'relay',
@@ -769,23 +787,45 @@ class Agent:
                     'from_chain': chain_name,
                     'to_chain_id': chain_id,
                     'to_chain': chain_name,
-                    'wallet': {'address': quote_data.get('details', {}).get('sender', '')},
+                    'wallet': {'address': details.get('sender', '')},
+                    # tokens — primary source for widget symbol display
+                    'tokens': {
+                        'input': {
+                            'symbol': in_sym,
+                            'address': input_token.get('address', ''),
+                            'amount': in_amount,
+                        },
+                        'output': {
+                            'symbol': out_sym,
+                            'address': output_token.get('address', ''),
+                            'amount_estimate': out_amount,
+                        },
+                    },
                     'amounts': {
-                        'input_amount': input_token.get('amount', '0'),
+                        'input': in_amount,
                         'input_base_units': input_token.get('amount_base_units', '0'),
-                        'output_estimate': output_token.get('amount_estimate', '0'),
                     },
                     'breakdown': {
                         'input': {
                             'token_address': input_token.get('address', ''),
-                            'symbol': input_token.get('symbol', ''),
+                            'symbol': in_sym,
+                            'amount': in_amount,
                         },
                         'output': {
                             'token_address': output_token.get('address', ''),
-                            'symbol': output_token.get('symbol', ''),
+                            'symbol': out_sym,
+                            'amount_estimate': out_amount,
                         },
+                        'fees': {
+                            'total_usd': total_fee_usd,
+                            'gas_usd': gas_usd,
+                            'slippage_percent': fees_info.get('slippage_percent'),
+                        },
+                        'eta_seconds': eta_seconds,
                     },
-                    'fees': fees_info,
+                    'usd_estimates': {
+                        'gas': gas_usd,
+                    },
                     'instructions': result_data.get('instructions', []),
                 }
 
@@ -798,8 +838,6 @@ class Agent:
                         'chainId': chain_id,
                     }
 
-                in_sym = input_token.get('symbol', 'TOKEN')
-                out_sym = output_token.get('symbol', 'TOKEN')
                 panel = {
                     'id': 'relay_swap_quote',
                     'kind': 'card',
@@ -812,9 +850,7 @@ class Agent:
                     },
                 }
 
-                in_amount = input_token.get('amount', '?')
-                out_amount = output_token.get('amount_estimate', '?')
-                fee_usd = fees_info.get('total_usd', '?')
+                fee_usd = total_fee_usd or '0'
 
                 summary_lines = [
                     f"Swap {in_amount} {in_sym} for ~{out_amount} {out_sym} on {chain_name}",
