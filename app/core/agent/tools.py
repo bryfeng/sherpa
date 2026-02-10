@@ -2652,17 +2652,21 @@ class ToolRegistry:
             # Convert slippage percent to basis points
             max_slippage_bps = int(max_slippage_percent * 100)
 
+            # Normalize config to canonical camelCase nested format
+            from app.core.strategies.config_normalizer import normalize_strategy_config
+            normalized_config = normalize_strategy_config(strategy_type, {
+                **config,
+                "chainId": chain_id,
+                "maxSlippageBps": max_slippage_bps,
+                "maxGasUsd": max_gas_usd,
+            })
+
             args = {
                 "userId": user.get("_id"),
                 "walletAddress": wallet_address.lower(),
                 "name": name,
                 "strategyType": strategy_type,
-                "config": {
-                    **config,
-                    "chainId": chain_id,
-                    "maxSlippageBps": max_slippage_bps,
-                    "maxGasUsd": max_gas_usd,
-                },
+                "config": normalized_config,
             }
 
             strategy_id = await convex.mutation("strategies:create", args)

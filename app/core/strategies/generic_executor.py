@@ -154,6 +154,8 @@ class GenericStrategyExecutor:
 
             # If strategy has a Smart Session and doesn't require manual approval,
             # execute via Rhinestone intent (no wallet signature needed)
+            strategy_type = strategy.get("strategyType", "dca")
+
             if (
                 smart_session_id
                 and RHINESTONE_AVAILABLE
@@ -165,10 +167,11 @@ class GenericStrategyExecutor:
                     wallet_address=wallet_address,
                     config=config,
                     smart_session_id=smart_session_id,
+                    strategy_type=strategy_type,
                 )
 
             # 2. Extract swap parameters from strategy config
-            swap_params = self._extract_swap_params(config, wallet_address)
+            swap_params = self._extract_swap_params(config, wallet_address, strategy_type)
 
             if not swap_params:
                 return ExecutionResult(
@@ -344,6 +347,7 @@ class GenericStrategyExecutor:
         self,
         config: Dict[str, Any],
         wallet_address: str,
+        strategy_type: str = "dca",
     ) -> Optional[SwapParams]:
         """
         Extract swap parameters from strategy config.
@@ -354,6 +358,10 @@ class GenericStrategyExecutor:
         - Limit Order: fromToken, toToken, amount, triggerPrice
         """
         try:
+            # Normalize config to canonical camelCase nested format
+            from app.core.strategies.config_normalizer import normalize_strategy_config
+            config = normalize_strategy_config(strategy_type, config)
+
             # Get token addresses/symbols
             from_token_config = config.get("fromToken", {})
             to_token_config = config.get("toToken", {})
@@ -460,6 +468,7 @@ class GenericStrategyExecutor:
         wallet_address: str,
         config: Dict[str, Any],
         smart_session_id: str,
+        strategy_type: str = "dca",
     ) -> ExecutionResult:
         """
         Execute a strategy via Rhinestone intent (Smart Session).
@@ -480,7 +489,7 @@ class GenericStrategyExecutor:
 
         try:
             # Extract swap params
-            swap_params = self._extract_swap_params(config, wallet_address)
+            swap_params = self._extract_swap_params(config, wallet_address, strategy_type)
             if not swap_params:
                 return ExecutionResult(
                     success=False,
@@ -512,7 +521,7 @@ class GenericStrategyExecutor:
                         "smartAccountAddress": wallet_address,
                         "intentType": "swap",
                         "chainId": swap_params.chain_id,
-                        "sourceType": "manual",
+                        "sourceType": f"{strategy_type}_strategy",
                         "sourceId": strategy_id,
                         "estimatedValueUsd": float(swap_params.amount),
                         "tokenIn": swap_params.from_token,
