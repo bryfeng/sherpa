@@ -201,7 +201,7 @@ backend/
 │   │   ├── runtime.py            # Event loop (max 4 concurrent, 20s timeout)
 │   │   ├── strategy.py           # Base strategy class
 │   │   ├── router.py             # /runtime/* control API
-│   │   └── strategies/           # Built-in: heartbeat, execution_poller
+│   │   └── strategies/           # Built-in: heartbeat
 │   │
 │   ├── auth/                     # Authentication
 │   │   ├── service.py            # Wallet sign-in + JWT (HS256, 60min/7day)
