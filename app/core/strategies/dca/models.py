@@ -182,6 +182,40 @@ class DCAStats:
     last_error: Optional[str] = None
 
 
+def _resolve_token(value: Any, chain_id: int = 1) -> TokenInfo:
+    """Resolve a token from either a dict or a symbol string.
+
+    The AI agent chat flow stores tokens as plain symbol strings
+    (e.g. "USDC"), while the DCA-specific flow stores full objects.
+    """
+    if isinstance(value, dict):
+        return TokenInfo.from_dict(value)
+
+    symbol = str(value).upper()
+    _KNOWN_TOKENS: Dict[int, Dict[str, tuple]] = {
+        1: {  # Ethereum mainnet
+            "ETH": ("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 18),
+            "WETH": ("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 18),
+            "USDC": ("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 6),
+            "USDT": ("0xdAC17F958D2ee523a2206206994597C13D831ec7", 6),
+            "DAI": ("0x6B175474E89094C44Da98b954EedeAC495271d0F", 18),
+            "WBTC": ("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", 8),
+        },
+        8453: {  # Base
+            "ETH": ("0x4200000000000000000000000000000000000006", 18),
+            "WETH": ("0x4200000000000000000000000000000000000006", 18),
+            "USDC": ("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", 6),
+        },
+    }
+    chain_tokens = _KNOWN_TOKENS.get(chain_id, {})
+    if symbol in chain_tokens:
+        addr, decimals = chain_tokens[symbol]
+        return TokenInfo(symbol=symbol, address=addr, chain_id=chain_id, decimals=decimals)
+
+    # Fallback: use zero address (executor will need to resolve)
+    return TokenInfo(symbol=symbol, address="0x" + "0" * 40, chain_id=chain_id, decimals=18)
+
+
 @dataclass
 class DCAStrategy:
     """Complete DCA strategy with config and state."""
@@ -220,19 +254,28 @@ class DCAStrategy:
 
         The strategies table stores DCA config in a `config` blob
         rather than as top-level fields like dcaStrategies does.
+        Handles both camelCase and snake_case keys, and both
+        full token objects and plain symbol strings.
         """
         cfg = data.get("config", {})
 
+        # Determine chain ID (may be stored as float from Convex)
+        chain_id = int(cfg.get("chainId", cfg.get("chain_id", 1)))
+
+        # Resolve tokens — handle both dict objects and plain strings
+        from_token_raw = cfg.get("fromToken") or cfg.get("from_token")
+        to_token_raw = cfg.get("toToken") or cfg.get("to_token")
+
         config = DCAConfig(
-            from_token=TokenInfo.from_dict(cfg["fromToken"]),
-            to_token=TokenInfo.from_dict(cfg["toToken"]),
-            amount_per_execution_usd=Decimal(str(cfg.get("amountPerExecutionUsd", cfg.get("amount", 0)))),
+            from_token=_resolve_token(from_token_raw, chain_id),
+            to_token=_resolve_token(to_token_raw, chain_id),
+            amount_per_execution_usd=Decimal(str(cfg.get("amountPerExecutionUsd", cfg.get("amount_usd", cfg.get("amount", 0))))),
             frequency=DCAFrequency(cfg.get("frequency", "daily")),
             execution_hour_utc=cfg.get("executionHourUtc", 9),
             execution_day_of_week=cfg.get("executionDayOfWeek"),
             execution_day_of_month=cfg.get("executionDayOfMonth"),
             cron_expression=cfg.get("cronExpression") or data.get("cronExpression"),
-            max_slippage_bps=cfg.get("maxSlippageBps", 100),
+            max_slippage_bps=int(cfg.get("maxSlippageBps", 100)),
             max_gas_usd=Decimal(str(cfg.get("maxGasUsd", 10))),
             skip_if_gas_above_usd=Decimal(str(cfg["skipIfGasAboveUsd"])) if cfg.get("skipIfGasAboveUsd") else None,
             pause_if_price_above_usd=Decimal(str(cfg["pauseIfPriceAboveUsd"])) if cfg.get("pauseIfPriceAboveUsd") else None,
