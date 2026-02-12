@@ -215,6 +215,62 @@ class DCAStrategy:
     activated_at: Optional[datetime] = None
 
     @classmethod
+    def from_strategies_table(cls, data: Dict[str, Any]) -> "DCAStrategy":
+        """Create from generic strategies table document.
+
+        The strategies table stores DCA config in a `config` blob
+        rather than as top-level fields like dcaStrategies does.
+        """
+        cfg = data.get("config", {})
+
+        config = DCAConfig(
+            from_token=TokenInfo.from_dict(cfg["fromToken"]),
+            to_token=TokenInfo.from_dict(cfg["toToken"]),
+            amount_per_execution_usd=Decimal(str(cfg.get("amountPerExecutionUsd", cfg.get("amount", 0)))),
+            frequency=DCAFrequency(cfg.get("frequency", "daily")),
+            execution_hour_utc=cfg.get("executionHourUtc", 9),
+            execution_day_of_week=cfg.get("executionDayOfWeek"),
+            execution_day_of_month=cfg.get("executionDayOfMonth"),
+            cron_expression=cfg.get("cronExpression") or data.get("cronExpression"),
+            max_slippage_bps=cfg.get("maxSlippageBps", 100),
+            max_gas_usd=Decimal(str(cfg.get("maxGasUsd", 10))),
+            skip_if_gas_above_usd=Decimal(str(cfg["skipIfGasAboveUsd"])) if cfg.get("skipIfGasAboveUsd") else None,
+            pause_if_price_above_usd=Decimal(str(cfg["pauseIfPriceAboveUsd"])) if cfg.get("pauseIfPriceAboveUsd") else None,
+            pause_if_price_below_usd=Decimal(str(cfg["pauseIfPriceBelowUsd"])) if cfg.get("pauseIfPriceBelowUsd") else None,
+            min_amount_out=Decimal(cfg["minAmountOut"]) if cfg.get("minAmountOut") else None,
+            max_total_spend_usd=Decimal(str(cfg["maxTotalSpendUsd"])) if cfg.get("maxTotalSpendUsd") else None,
+            max_executions=cfg.get("maxExecutions"),
+            end_date=datetime.fromtimestamp(cfg["endDate"] / 1000) if cfg.get("endDate") else None,
+        )
+
+        stats = DCAStats(
+            total_executions=data.get("totalExecutions", 0),
+            successful_executions=data.get("successfulExecutions", 0),
+            failed_executions=data.get("failedExecutions", 0),
+            skipped_executions=0,
+            total_amount_spent_usd=Decimal("0"),
+            total_tokens_acquired=Decimal("0"),
+        )
+
+        return cls(
+            id=data["_id"],
+            user_id=data["userId"],
+            wallet_id=data.get("walletId", ""),
+            wallet_address=data["walletAddress"],
+            name=data["name"],
+            description=data.get("description"),
+            config=config,
+            status=DCAStatus(data["status"]),
+            session_key_id=data.get("sessionKeyId"),
+            smart_session_id=data.get("smartSessionId"),
+            next_execution_at=datetime.fromtimestamp(data["nextExecutionAt"] / 1000) if data.get("nextExecutionAt") else None,
+            last_execution_at=datetime.fromtimestamp(data["lastExecutedAt"] / 1000) if data.get("lastExecutedAt") else None,
+            stats=stats,
+            created_at=datetime.fromtimestamp(data["createdAt"] / 1000),
+            updated_at=datetime.fromtimestamp(data["updatedAt"] / 1000),
+        )
+
+    @classmethod
     def from_convex(cls, data: Dict[str, Any]) -> DCAStrategy:
         """Create from Convex document."""
         config = DCAConfig(

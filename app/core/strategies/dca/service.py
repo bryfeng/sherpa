@@ -155,11 +155,28 @@ class DCAService:
         return await self.get_strategy(strategy_id)
 
     async def get_strategy(self, strategy_id: str) -> Optional[DCAStrategy]:
-        """Get a strategy by ID."""
-        data = await self._convex.query("dca:get", {"id": strategy_id})
-        if not data:
-            return None
-        return DCAStrategy.from_convex(data)
+        """Get a strategy by ID.
+
+        Tries dcaStrategies table first, then falls back to the generic
+        strategies table (which stores DCA config in a `config` blob).
+        """
+        # Try dcaStrategies table first
+        try:
+            data = await self._convex.query("dca:get", {"id": strategy_id})
+            if data:
+                return DCAStrategy.from_convex(data)
+        except Exception:
+            pass  # ID might be from the strategies table, not dcaStrategies
+
+        # Fallback: try the generic strategies table
+        try:
+            data = await self._convex.query("strategies:get", {"strategyId": strategy_id})
+            if data and data.get("strategyType") == "dca" and data.get("config"):
+                return DCAStrategy.from_strategies_table(data)
+        except Exception:
+            pass
+
+        return None
 
     async def list_strategies(
         self,
