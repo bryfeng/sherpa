@@ -181,15 +181,39 @@ class ExecutionResponse(BaseModel):
         populate_by_name = True
 
 
+class InternalExecuteRequest(BaseModel):
+    """Request body for internal DCA execution (called by Convex cron)."""
+    strategy_id: str = Field(..., alias="strategyId", description="DCA strategy ID")
+
+    class Config:
+        populate_by_name = True
+
+
 # =============================================================================
 # Dependencies
 # =============================================================================
 
 
 def get_dca_service() -> DCAService:
-    """Get DCA service instance."""
+    """Get DCA service instance with all providers wired up."""
     convex = get_convex_client()
-    return DCAService(convex_client=convex)
+
+    from app.core.strategies.dca.providers import (
+        DCASwapProvider,
+        DCAPricingProvider,
+        DCAGasProvider,
+        DCASessionManager,
+        DCAPolicyEngine,
+    )
+
+    return DCAService(
+        convex_client=convex,
+        swap_provider=DCASwapProvider(),
+        pricing_provider=DCAPricingProvider(),
+        gas_provider=DCAGasProvider(),
+        session_manager=DCASessionManager(convex),
+        policy_engine=DCAPolicyEngine(),
+    )
 
 
 def verify_internal_key(x_internal_key: str = Header(None, alias="X-Internal-Key")) -> bool:
@@ -462,15 +486,17 @@ async def get_performance(
 # =============================================================================
 
 
+# Called by: frontend/convex/scheduler.ts:checkDCAStrategies (line ~337)
+# Convex sends: { strategyId: strategy._id } in JSON body
 @router.post("/internal/execute")
 async def internal_execute(
-    strategy_id: str,
+    request: InternalExecuteRequest,
     _: bool = Depends(verify_internal_key),
     service: DCAService = Depends(get_dca_service),
 ):
     """Internal endpoint called by cron to execute a DCA strategy."""
     try:
-        result = await service.execute_now(strategy_id)
+        result = await service.execute_now(request.strategy_id)
         return {
             "success": result.success,
             "status": result.status.value,
