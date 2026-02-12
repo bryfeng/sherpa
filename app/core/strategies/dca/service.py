@@ -173,8 +173,8 @@ class DCAService:
             data = await self._convex.query("strategies:get", {"strategyId": strategy_id})
             if data and data.get("strategyType") == "dca" and data.get("config"):
                 return DCAStrategy.from_strategies_table(data)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"strategies:get fallback failed for {strategy_id}: {e}")
 
         return None
 
