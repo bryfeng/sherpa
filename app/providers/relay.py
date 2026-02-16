@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
+import time
 import uuid
 from typing import Any, Dict, List, Optional
 
 import httpx
+import structlog
 
 from ..config import settings
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger("provider.relay")
 
 
 class RelayProvider:
@@ -54,22 +55,14 @@ class RelayProvider:
     ) -> httpx.Response:
         merged_headers = {**self._headers(), **(headers or {})}
         last_error: Optional[Exception] = None
-        request_id = str(uuid.uuid4())[:8]  # Short ID for log correlation
+        request_id = str(uuid.uuid4())[:8]
+        log = logger.bind(request_id=request_id, method=method, path=path)
 
-        # Log outgoing request
-        logger.info(
-            "[Relay:%s] %s %s",
-            request_id,
-            method,
-            path,
-        )
+        log.info("relay_request")
         if json_payload:
-            logger.debug(
-                "[Relay:%s] Request payload: %s",
-                request_id,
-                json.dumps(json_payload, indent=2),
-            )
+            log.debug("relay_request_payload", payload=json.dumps(json_payload, indent=2))
 
+        t0 = time.perf_counter()
         for index, base_url in enumerate(self.base_urls):
             try:
                 async with httpx.AsyncClient(base_url=base_url, timeout=self.timeout_s) as client:
@@ -77,41 +70,27 @@ class RelayProvider:
                         method, path, json=json_payload, headers=merged_headers, **kwargs
                     )
 
-                    # Log response
-                    logger.debug(
-                        "[Relay:%s] Response %d: %s",
-                        request_id,
-                        response.status_code,
-                        response.text[:500] if response.text else "(empty)",
-                    )
+                    duration_ms = (time.perf_counter() - t0) * 1000
+                    log.debug("relay_response", status=response.status_code, duration_ms=round(duration_ms, 1))
 
                     response.raise_for_status()
                     return response
             except httpx.HTTPStatusError as exc:
-                # Log the error with full context
+                duration_ms = (time.perf_counter() - t0) * 1000
                 error_body = exc.response.text or exc.response.reason_phrase
-                logger.error(
-                    "[Relay:%s] HTTP %d error on %s %s: %s | Request: %s",
-                    request_id,
-                    exc.response.status_code,
-                    method,
-                    path,
-                    error_body[:500],
-                    json.dumps(json_payload) if json_payload else "(none)",
+                log.error(
+                    "relay_http_error",
+                    status=exc.response.status_code,
+                    error=error_body[:500],
+                    duration_ms=round(duration_ms, 1),
                 )
-                # Relay returns JSON error bodies with useful context; stop early unless we have another base URL to try.
                 if exc.response.status_code in (404, 405) and index < len(self.base_urls) - 1:
                     last_error = exc
                     continue
                 raise
             except httpx.RequestError as exc:
-                logger.error(
-                    "[Relay:%s] Request error on %s %s: %s",
-                    request_id,
-                    method,
-                    path,
-                    str(exc),
-                )
+                duration_ms = (time.perf_counter() - t0) * 1000
+                log.error("relay_request_error", error=str(exc), duration_ms=round(duration_ms, 1))
                 last_error = exc
                 continue
 

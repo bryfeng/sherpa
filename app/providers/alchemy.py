@@ -1,8 +1,13 @@
+import time
+
 import httpx
+import structlog
 from typing import Any, Dict, List, Optional
 from ..config import settings
 from .base import IndexerProvider
 from .token_list import get_fallback_token_metadata, is_likely_spam_token
+
+logger = structlog.stdlib.get_logger("provider.alchemy")
 
 
 class UnsupportedChainError(Exception):
@@ -78,7 +83,7 @@ class AlchemyProvider(IndexerProvider):
                 return url
         except Exception as e:
             # Log but continue with fallback
-            print(f"Chain service unavailable, using fallback: {e}")
+            logger.warning("chain_service_unavailable", chain=normalized, error=str(e))
 
         # Fallback to hardcoded slugs
         slug = self._FALLBACK_SLUGS.get(normalized)
@@ -215,7 +220,7 @@ class AlchemyProvider(IndexerProvider):
                     data = response.json()
                     
                     if "error" in data:
-                        print(f"Alchemy metadata error for {addr}: {data['error']}")
+                        logger.warning("alchemy_metadata_error", address=addr, error=data["error"])
                         # Try fallback token metadata
                         fallback_metadata = get_fallback_token_metadata(addr)
                         metadata[addr] = fallback_metadata
@@ -267,7 +272,7 @@ class AlchemyProvider(IndexerProvider):
                     }
                     
             except Exception as e:
-                print(f"Failed to get metadata for {addr}: {str(e)}")
+                logger.error("alchemy_metadata_fetch_failed", address=addr, error=str(e))
                 # Try fallback token metadata for failed requests
                 fallback_metadata = get_fallback_token_metadata(addr)
                 metadata[addr] = fallback_metadata
