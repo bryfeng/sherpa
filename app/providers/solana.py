@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import time
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Dict, List, Optional
 
 import httpx
+import structlog
 
 from ..config import settings
 from .base import IndexerProvider
+
+logger = structlog.stdlib.get_logger("provider.helius")
 
 
 class SolanaProvider(IndexerProvider):
@@ -44,14 +48,23 @@ class SolanaProvider(IndexerProvider):
         params = {"api-key": self.api_key}
         headers = {"accept": "application/json"}
 
-        async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-            response = await client.get(url, params=params, headers=headers)
-            response.raise_for_status()
-            payload = response.json()
+        t0 = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_s) as client:
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as e:
+            duration_ms = (time.perf_counter() - t0) * 1000
+            logger.error("helius_fetch_error", address=address, duration_ms=round(duration_ms, 1), error=str(e))
+            raise
 
+        duration_ms = (time.perf_counter() - t0) * 1000
         if not isinstance(payload, dict):
+            logger.error("helius_unexpected_response", address=address, duration_ms=round(duration_ms, 1))
             raise ValueError("Unexpected response from Helius balances API")
 
+        logger.info("helius_fetch_balances", address=address, duration_ms=round(duration_ms, 1))
         self._cache[address] = payload
         return payload
 

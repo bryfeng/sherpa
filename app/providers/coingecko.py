@@ -1,10 +1,15 @@
 import asyncio
 import math
+import time
+
 import httpx
+import structlog
 from typing import Any, Dict, List, Optional
 from ..config import settings
 from .base import PriceProvider
 from ..services.evm import chain_id_from_coingecko_platform, is_evm_chain
+
+logger = structlog.stdlib.get_logger("provider.coingecko")
 
 
 class CoingeckoProvider(PriceProvider):
@@ -34,12 +39,12 @@ class CoingeckoProvider(PriceProvider):
                 "status": "unavailable",
                 "reason": "Provider disabled"
             }
-        
+
         try:
             headers = {}
             if self.api_key:
                 headers["X-CG-Demo-API-Key"] = self.api_key
-            
+
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     f"{self.base_url}/ping",
@@ -49,20 +54,21 @@ class CoingeckoProvider(PriceProvider):
                 response.raise_for_status()
                 return {"status": "healthy", "latency_ms": int(response.elapsed.total_seconds() * 1000)}
         except Exception as e:
+            logger.error("coingecko_health_check_failed", error=str(e))
             return {"status": "error", "reason": str(e)}
     
     async def get_token_prices(self, token_addresses: List[str], vs_currency: str = "usd") -> Dict[str, Any]:
         """Get current prices for multiple tokens by contract address"""
         if not token_addresses:
             return {}
-        
+
         # Coingecko expects comma-separated addresses
         addresses_param = ",".join(token_addresses)
-        
+
         headers = {}
         if self.api_key:
             headers["X-CG-Demo-API-Key"] = self.api_key
-        
+
         params = {
             "contract_addresses": addresses_param,
             "vs_currencies": vs_currency,
@@ -70,7 +76,8 @@ class CoingeckoProvider(PriceProvider):
             "include_24hr_vol": "false",
             "include_24hr_change": "false"
         }
-        
+
+        t0 = time.perf_counter()
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"{self.base_url}/simple/token_price/ethereum",
@@ -79,6 +86,8 @@ class CoingeckoProvider(PriceProvider):
                 timeout=self.timeout_s
             )
             response.raise_for_status()
+            duration_ms = (time.perf_counter() - t0) * 1000
+            logger.info("coingecko_token_prices", count=len(token_addresses), duration_ms=round(duration_ms, 1))
             data = response.json()
             
             # Transform to our format

@@ -35,13 +35,15 @@ class TestAgenticWalletAPI:
         """Test the health check endpoint"""
         response = client.get("/healthz")
         assert response.status_code == 200
-        
+
         data = response.json()
         assert "status" in data
         assert "providers" in data
-        assert "available_providers" in data
-        assert "total_providers" in data
-        
+        assert "database" in data
+        assert "executions" in data
+        assert "uptime_seconds" in data
+        assert "version" in data
+
         # Should have alchemy and coingecko providers
         assert "alchemy" in data["providers"]
         assert "coingecko" in data["providers"]

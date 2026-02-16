@@ -5,12 +5,17 @@ This client provides async methods to call Convex queries, mutations, and action
 via the Convex HTTP API.
 """
 
+import time
+
 import httpx
+import structlog
 from typing import Any, Dict, List, Optional, TypeVar, Generic
 from pydantic import BaseModel
 from functools import lru_cache
 
 from app.config import settings
+
+logger = structlog.stdlib.get_logger("convex")
 
 
 class ConvexError(Exception):
@@ -113,6 +118,7 @@ class ConvexClient:
             ConvexQueryError: If the query fails
         """
         client = await self._get_client()
+        t0 = time.perf_counter()
 
         try:
             response = await client.post(
@@ -132,12 +138,18 @@ class ConvexClient:
             if "error" in data:
                 raise ConvexQueryError(data["error"])
 
+            duration_ms = (time.perf_counter() - t0) * 1000
+            logger.info("convex_query", function=function_name, duration_ms=round(duration_ms, 1))
             return data.get("value")
 
-        except httpx.HTTPStatusError as e:
-            raise ConvexQueryError(f"Query failed: {e.response.text}") from e
-        except httpx.RequestError as e:
-            raise ConvexQueryError(f"Request failed: {str(e)}") from e
+        except (httpx.HTTPStatusError, httpx.RequestError, ConvexError) as e:
+            duration_ms = (time.perf_counter() - t0) * 1000
+            logger.error("convex_query_error", function=function_name, duration_ms=round(duration_ms, 1), error=str(e))
+            if isinstance(e, httpx.HTTPStatusError):
+                raise ConvexQueryError(f"Query failed: {e.response.text}") from e
+            if isinstance(e, httpx.RequestError):
+                raise ConvexQueryError(f"Request failed: {str(e)}") from e
+            raise
 
     async def mutation(
         self,
@@ -158,6 +170,7 @@ class ConvexClient:
             ConvexMutationError: If the mutation fails
         """
         client = await self._get_client()
+        t0 = time.perf_counter()
 
         try:
             response = await client.post(
@@ -177,12 +190,18 @@ class ConvexClient:
             if "error" in data:
                 raise ConvexMutationError(data["error"])
 
+            duration_ms = (time.perf_counter() - t0) * 1000
+            logger.info("convex_mutation", function=function_name, duration_ms=round(duration_ms, 1))
             return data.get("value")
 
-        except httpx.HTTPStatusError as e:
-            raise ConvexMutationError(f"Mutation failed: {e.response.text}") from e
-        except httpx.RequestError as e:
-            raise ConvexMutationError(f"Request failed: {str(e)}") from e
+        except (httpx.HTTPStatusError, httpx.RequestError, ConvexError) as e:
+            duration_ms = (time.perf_counter() - t0) * 1000
+            logger.error("convex_mutation_error", function=function_name, duration_ms=round(duration_ms, 1), error=str(e))
+            if isinstance(e, httpx.HTTPStatusError):
+                raise ConvexMutationError(f"Mutation failed: {e.response.text}") from e
+            if isinstance(e, httpx.RequestError):
+                raise ConvexMutationError(f"Request failed: {str(e)}") from e
+            raise
 
     async def action(
         self,
@@ -205,6 +224,7 @@ class ConvexClient:
             ConvexError: If the action fails
         """
         client = await self._get_client()
+        t0 = time.perf_counter()
 
         try:
             response = await client.post(
@@ -224,12 +244,18 @@ class ConvexClient:
             if "error" in data:
                 raise ConvexError(data["error"])
 
+            duration_ms = (time.perf_counter() - t0) * 1000
+            logger.info("convex_action", function=function_name, duration_ms=round(duration_ms, 1))
             return data.get("value")
 
-        except httpx.HTTPStatusError as e:
-            raise ConvexError(f"Action failed: {e.response.text}") from e
-        except httpx.RequestError as e:
-            raise ConvexError(f"Request failed: {str(e)}") from e
+        except (httpx.HTTPStatusError, httpx.RequestError, ConvexError) as e:
+            duration_ms = (time.perf_counter() - t0) * 1000
+            logger.error("convex_action_error", function=function_name, duration_ms=round(duration_ms, 1), error=str(e))
+            if isinstance(e, httpx.HTTPStatusError):
+                raise ConvexError(f"Action failed: {e.response.text}") from e
+            if isinstance(e, httpx.RequestError):
+                raise ConvexError(f"Request failed: {str(e)}") from e
+            raise
 
     # =========================================================================
     # Convenience methods for common operations
