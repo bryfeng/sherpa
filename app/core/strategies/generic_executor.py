@@ -381,6 +381,18 @@ class GenericStrategyExecutor:
                 logger.warning("Missing from/to token in config")
                 return None
 
+            # Guard D: warn if from_token is a symbol, not an address
+            if not str(from_token).startswith("0x"):
+                logger.warning(
+                    f"from_token is symbol '{from_token}', not address — "
+                    f"downstream intent builder may fail"
+                )
+            if not str(to_token).startswith("0x"):
+                logger.warning(
+                    f"to_token is symbol '{to_token}', not address — "
+                    f"downstream intent builder may fail"
+                )
+
             # Get amount
             amount = (
                 config.get("amountPerExecution")
@@ -511,6 +523,12 @@ class GenericStrategyExecutor:
                 },
             )
 
+            # Guard C: extract token metadata for structured intent payload
+            from app.core.strategies.config_normalizer import normalize_strategy_config
+            norm_config = normalize_strategy_config(strategy_type, config)
+            _from_cfg = norm_config.get("fromToken", {})
+            _to_cfg = norm_config.get("toToken", {})
+
             # Create UI intent record for tracking
             ui_intent_id = None
             try:
@@ -524,8 +542,16 @@ class GenericStrategyExecutor:
                         "sourceType": f"{strategy_type}_strategy",
                         "sourceId": strategy_id,
                         "estimatedValueUsd": float(swap_params.amount),
-                        "tokenIn": swap_params.from_token,
-                        "tokenOut": swap_params.to_token,
+                        # Guard C: structured objects, not raw strings
+                        "tokenIn": {
+                            "symbol": _from_cfg.get("symbol", swap_params.from_token),
+                            "address": swap_params.from_token,
+                            "amount": swap_params.amount,
+                        },
+                        "tokenOut": {
+                            "symbol": _to_cfg.get("symbol", swap_params.to_token),
+                            "address": swap_params.to_token,
+                        },
                     },
                 )
             except Exception as e:

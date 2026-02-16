@@ -851,6 +851,19 @@ class DCAExecutor:
         """Create an intent record in Convex for real-time UI tracking."""
         try:
             config = strategy.config
+            # Guard B: validate token addresses before sending to Convex
+            assert config.from_token.address.startswith("0x"), (
+                f"from_token.address invalid: {config.from_token.address}"
+            )
+            assert config.from_token.address != "0x" + "0" * 40, (
+                f"from_token.address is zero — token '{config.from_token.symbol}' not resolved"
+            )
+            assert config.to_token.address.startswith("0x"), (
+                f"to_token.address invalid: {config.to_token.address}"
+            )
+            assert config.to_token.address != "0x" + "0" * 40, (
+                f"to_token.address is zero — token '{config.to_token.symbol}' not resolved"
+            )
             # Called by: frontend/convex/smartSessionIntents.ts:backendCreate
             intent_id = await self._convex.mutation(
                 "smartSessionIntents:backendCreate",

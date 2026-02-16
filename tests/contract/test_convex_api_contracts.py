@@ -13,7 +13,7 @@ Reference files:
 """
 
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -138,11 +138,14 @@ class TestNewsInternalProcessContract:
         with patch("app.api.news.get_llm_provider") as mock_provider:
             mock_provider.return_value = AsyncMock()
 
-            with patch("app.api.news.process_news_items") as mock_process:
-                mock_process.return_value = []
+            with patch("app.api.news.get_convex_client") as mock_convex:
+                mock_convex.return_value.query = AsyncMock(return_value=[])
 
-                with patch("app.api.news.get_convex_client") as mock_convex:
-                    mock_convex.return_value.query = AsyncMock(return_value=[])
+                with patch("app.workers.news_processor_worker.run_news_processor_worker") as mock_worker:
+                    mock_result = MagicMock()
+                    mock_result.items_processed = 0
+                    mock_result.items_failed = 0
+                    mock_worker.return_value = mock_result
 
                     response = client.post(
                         "/news/internal/process",
@@ -200,6 +203,52 @@ class TestStrategyInternalExecuteContract:
 # =============================================================================
 # Config Format Cross-Boundary Tests
 # =============================================================================
+
+
+class TestDCAResponseShapeContract:
+    """
+    Verify DCA execution response includes required fields.
+
+    Called by: frontend/convex/scheduler.ts:checkDCAStrategies
+    The response must include txHash for completeExecutionById.
+    """
+
+    ENDPOINT = "/dca/internal/execute"
+
+    def test_dca_endpoint_exists(self):
+        """DCA internal execute endpoint returns non-404."""
+        response = client.post(
+            self.ENDPOINT,
+            json={"strategyId": "nonexistent"},
+            headers={"X-Internal-Key": settings.convex_internal_api_key or "test-key"},
+        )
+        assert response.status_code != 404, (
+            f"DCA endpoint {self.ENDPOINT} not found — routing broken"
+        )
+
+    def test_dca_execute_response_has_tx_hash_on_success(self):
+        """On success, response must include txHash field (needed by completeExecutionById)."""
+        with patch("app.api.dca.get_dca_service") as mock_svc:
+            mock_svc.return_value.execute_now = AsyncMock(
+                return_value={
+                    "status": "completed",
+                    "txHash": "0xabc123",
+                    "executionId": "exec_1",
+                }
+            )
+
+            response = client.post(
+                self.ENDPOINT,
+                json={"strategyId": "test_strategy_123"},
+                headers={"X-Internal-Key": settings.convex_internal_api_key or "test-key"},
+            )
+
+            # If execution succeeds, response body should have txHash
+            if response.status_code == 200:
+                data = response.json()
+                assert "txHash" in data or "tx_hash" in data, (
+                    f"Successful DCA response missing txHash. Got: {data}"
+                )
 
 
 class TestConfigFormatContract:
