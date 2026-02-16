@@ -189,6 +189,29 @@ def _resolve_token(value: Any, chain_id: int = 1) -> TokenInfo:
     (e.g. "USDC"), while the DCA-specific flow stores full objects.
     """
     if isinstance(value, dict):
+        # Guard A: dict without address — try resolving by symbol
+        if "address" not in value and "symbol" in value:
+            symbol = value["symbol"].upper()
+            chain_id_from_dict = int(value.get("chainId", chain_id))
+            _KNOWN_TOKENS_GUARD: Dict[int, Dict[str, tuple]] = {
+                1: {
+                    "ETH": ("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 18),
+                    "WETH": ("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 18),
+                    "USDC": ("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 6),
+                    "USDT": ("0xdAC17F958D2ee523a2206206994597C13D831ec7", 6),
+                    "DAI": ("0x6B175474E89094C44Da98b954EedeAC495271d0F", 18),
+                    "WBTC": ("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", 8),
+                },
+                8453: {
+                    "ETH": ("0x4200000000000000000000000000000000000006", 18),
+                    "WETH": ("0x4200000000000000000000000000000000000006", 18),
+                    "USDC": ("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", 6),
+                },
+            }
+            chain_tokens = _KNOWN_TOKENS_GUARD.get(chain_id_from_dict, {})
+            if symbol in chain_tokens:
+                addr, decimals = chain_tokens[symbol]
+                return TokenInfo(symbol=symbol, address=addr, chain_id=chain_id_from_dict, decimals=decimals)
         return TokenInfo.from_dict(value)
 
     symbol = str(value).upper()
