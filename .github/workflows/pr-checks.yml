@@ -1,0 +1,132 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same PR
+concurrency:
+  group: pr-checks-${{ github.head_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      # Minimal env vars so app can be imported for contract tests
+      CONVEX_URL: https://test.convex.cloud
+      INTERNAL_API_KEY: test-key
+      CONVEX_DEPLOY_KEY: test-key
+      JWT_SECRET: test-secret
+      ALCHEMY_API_KEY: test-key
+      ANTHROPIC_API_KEY: test-key
+      HELIUS_API_KEY: test-key
+      COINGECKO_API_KEY: test-key
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 10
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install ruff black pytest pytest-asyncio pytest-mock
+
+      - name: Count autofix attempts
+        id: autofix-count
+        run: |
+          count=$(git log --oneline -10 | grep -c '\[autofix\]' || true)
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Autofix attempts so far: $count"
+
+      - name: Run Ruff
+        id: ruff
+        continue-on-error: true
+        run: ruff check app/ 2>&1 | tee ruff-output.txt
+
+      - name: Run Black
+        id: black
+        continue-on-error: true
+        run: black --check app/ 2>&1 | tee black-output.txt
+
+      - name: Run contract tests
+        id: contract-tests
+        continue-on-error: true
+        run: pytest tests/contract/ -v 2>&1 | tee test-output.txt
+
+      - name: Collect errors
+        if: steps.ruff.outcome == 'failure' || steps.black.outcome == 'failure' || steps.contract-tests.outcome == 'failure'
+        id: errors
+        run: |
+          {
+            echo 'error_output<<ERRORS_EOF'
+            if [ "${{ steps.ruff.outcome }}" == "failure" ]; then
+              echo "=== Ruff Lint Errors ==="
+              cat ruff-output.txt
+              echo ""
+            fi
+            if [ "${{ steps.black.outcome }}" == "failure" ]; then
+              echo "=== Black Formatting Errors ==="
+              cat black-output.txt
+              echo ""
+            fi
+            if [ "${{ steps.contract-tests.outcome }}" == "failure" ]; then
+              echo "=== Contract Test Failures ==="
+              cat test-output.txt
+              echo ""
+            fi
+            echo 'ERRORS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Claude Code Autofix
+        if: |
+          (steps.ruff.outcome == 'failure' || steps.black.outcome == 'failure' || steps.contract-tests.outcome == 'failure') &&
+          steps.autofix-count.outputs.count < 3
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            The following CI checks failed on this PR. Fix the errors and push.
+
+            ${{ steps.errors.outputs.error_output }}
+
+            Rules:
+            - Only modify files in `app/` and `tests/` — do NOT touch pyproject.toml, requirements.txt, or railway.toml
+            - For Black formatting errors: run `black app/` to auto-format, then commit
+            - For Ruff errors: fix the actual code issues (imports, unused vars, etc.)
+            - For contract test failures: check the Convex ↔ Backend API contract conventions — ensure camelCase aliases on Pydantic models, correct body vs query param usage
+            - Fix the root cause of each error
+            - Commit with message prefix "[autofix] " followed by a short description
+          allowed_tools: |
+            Bash(git status)
+            Bash(git diff)
+            Bash(git add)
+            Bash(git commit)
+            Bash(git push)
+            Bash(ruff check)
+            Bash(black)
+            Bash(pytest)
+            Read
+            Edit
+            Glob
+            Grep
+
+      - name: Fail if checks did not pass
+        if: steps.ruff.outcome == 'failure' || steps.black.outcome == 'failure' || steps.contract-tests.outcome == 'failure'
+        run: |
+          echo "CI checks failed."
+          if [ "${{ steps.autofix-count.outputs.count }}" -ge 3 ]; then
+            echo "Max autofix attempts (3) reached. Manual fix required."
+          fi
+          exit 1
