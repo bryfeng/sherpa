@@ -5,6 +5,7 @@ This module replaces hardcoded intent classification and template responses
 with intelligent LLM-powered conversations using the Agent system.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -209,16 +210,22 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
                 persona_name,
             )
 
-            # ============================================================
-            # NEW: Use ReAct loop for LLM-driven tool calling
-            # This allows the LLM to decide which tools to call based on
-            # semantic understanding, rather than keyword matching
-            # ============================================================
+            # Run ReAct loop with event queue for real-time streaming
+            eq: asyncio.Queue = asyncio.Queue()
             llm_response, tool_data = await agent._run_react_loop(  # pylint: disable=protected-access
                 context_messages,
                 request,
                 conversation_id,
+                event_queue=eq,
             )
+
+            # Drain any queued agent events and emit them as SSE
+            while not eq.empty():
+                evt = eq.get_nowait()
+                yield _sse_event({
+                    'type': 'agent_event',
+                    'event': evt.model_dump(),
+                })
 
             # Get wallet address from tool_data or extract it
             wallet_address = tool_data.get('_address')
