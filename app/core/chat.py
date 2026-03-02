@@ -41,8 +41,8 @@ def _agent_cache_key(provider_name: Optional[str], model: Optional[str]) -> str:
     return f"{provider}:{model_value}"
 
 
-def _create_agent(provider_name: Optional[str] = None, model: Optional[str] = None) -> Agent:
-    llm_provider = get_llm_provider(provider_name=provider_name, model=model)
+async def _create_agent(provider_name: Optional[str] = None, model: Optional[str] = None) -> Agent:
+    llm_provider = await get_llm_provider(provider_name=provider_name, model=model)
     resolved_provider = _normalize_provider(provider_name)
     resolved_model = llm_provider.model
 
@@ -79,17 +79,17 @@ def _create_agent(provider_name: Optional[str] = None, model: Optional[str] = No
     return agent
 
 
-def _get_agent(provider_name: Optional[str] = None, model: Optional[str] = None) -> Agent:
+async def _get_agent(provider_name: Optional[str] = None, model: Optional[str] = None) -> Agent:
     key = _agent_cache_key(provider_name, model)
     agent = _agent_cache.get(key)
     if agent is None:
-        agent = _create_agent(provider_name, model)
+        agent = await _create_agent(provider_name, model)
         _agent_cache[key] = agent
     else:
         desired_provider = _normalize_provider(provider_name)
         cached_provider = _agent_provider_cache.get(key)
         if cached_provider != desired_provider:
-            agent = _create_agent(provider_name, model)
+            agent = await _create_agent(provider_name, model)
             _agent_cache[key] = agent
     return agent
 
@@ -107,7 +107,7 @@ async def run_chat(request: ChatRequest) -> ChatResponse:
     """Process chat request using the LLM-powered Agent system."""
 
     try:
-        agent = _get_agent(
+        agent = await _get_agent(
             getattr(request, "llm_provider", None),
             getattr(request, "llm_model", None),
         )
@@ -158,7 +158,7 @@ def stream_chat(request: ChatRequest) -> AsyncGenerator[str, None]:
     """Stream chat responses using the configured LLM provider."""
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        agent = _get_agent(
+        agent = await _get_agent(
             getattr(request, "llm_provider", None),
             getattr(request, "llm_model", None),
         )
