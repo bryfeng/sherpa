@@ -763,6 +763,18 @@ class Agent:
         - Recent performance, notable movers, risk flags
         - Clear next steps (e.g., rebalance ideas, questions to confirm preferences)"""
 
+    def _extract_wallet_address(self, request: ChatRequest) -> Optional[str]:
+        """Extract wallet address from request."""
+        if request.address:
+            return request.address
+        if request.messages:
+            last_message = request.messages[-1].content
+            pattern = r'0x[a-fA-F0-9]{40}'
+            matches = re.findall(pattern, last_message)
+            if matches:
+                return matches[0]
+        return None
+
     async def _ensure_portfolio_context(self, conversation_id: str, request: ChatRequest) -> None:
         """Proactively fetch and cache portfolio context if address is provided and context is missing."""
         try:
