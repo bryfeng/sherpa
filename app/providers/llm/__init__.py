@@ -64,12 +64,15 @@ class LLMProviderFactory:
             )
 
 
-def get_available_providers() -> Dict[str, Dict[str, Any]]:
+async def get_available_providers() -> Dict[str, Dict[str, Any]]:
     """Return metadata about supported LLM providers, grouped by canonical id."""
 
     providers_info: Dict[str, Dict[str, Any]] = {}
 
     from ...config import settings  # Local import to avoid circular dependency
+    from .model_catalog import get_model_catalog
+
+    catalog = await get_model_catalog()
 
     seen = set()
     for registry_name in PROVIDER_REGISTRY:
@@ -79,11 +82,11 @@ def get_available_providers() -> Dict[str, Dict[str, Any]]:
         seen.add(provider_name)
 
         display_name = PROVIDER_DISPLAY_NAMES.get(provider_name, provider_name.title())
-        models = settings.provider_models_catalog.get(provider_name, [])
+        models = catalog.get(provider_name, [])
 
         info: Dict[str, Any] = {
             "status": "available",
-            "default_model": settings.resolve_default_model(provider_name),
+            "default_model": settings.resolve_default_model(provider_name, catalog=catalog),
             "description": f"{display_name} API",
             "display_name": display_name,
             "models": models,
@@ -110,7 +113,7 @@ def get_available_providers() -> Dict[str, Dict[str, Any]]:
     return providers_info
 
 
-def get_llm_provider(
+async def get_llm_provider(
     provider_name: Optional[str] = None,
     model: Optional[str] = None,
     **kwargs,
@@ -118,6 +121,9 @@ def get_llm_provider(
     """Instantiate an LLM provider according to configuration overrides."""
 
     from ...config import settings
+    from .model_catalog import get_model_catalog
+
+    catalog = await get_model_catalog()
 
     provider_input = (provider_name or "").strip().lower() or None
     provider_explicit = provider_input is not None
@@ -128,7 +134,7 @@ def get_llm_provider(
     resolved_provider = canonical_provider_name(requested_provider)
 
     if not provider_explicit and model_input:
-        detected_provider = settings.resolve_provider_for_model(model_input)
+        detected_provider = settings.resolve_provider_for_model(model_input, catalog=catalog)
         if detected_provider:
             resolved_provider = canonical_provider_name(detected_provider)
 
@@ -146,14 +152,14 @@ def get_llm_provider(
     if isinstance(resolved_model, str):
         resolved_model = resolved_model.strip() or None
 
-    allowed_models = settings.provider_models_catalog.get(resolved_provider, [])
+    allowed_models = catalog.get(resolved_provider, [])
     allowed_ids = {entry.get("id") for entry in allowed_models if entry.get("id")}
 
     if resolved_model is None:
-        resolved_model = settings.resolve_default_model(resolved_provider)
+        resolved_model = settings.resolve_default_model(resolved_provider, catalog=catalog)
     elif allowed_ids and resolved_model not in allowed_ids:
         if not provider_explicit and model_input:
-            detected_provider = settings.resolve_provider_for_model(model_input)
+            detected_provider = settings.resolve_provider_for_model(model_input, catalog=catalog)
             if detected_provider:
                 new_provider = canonical_provider_name(detected_provider)
                 if new_provider != resolved_provider:
@@ -166,18 +172,18 @@ def get_llm_provider(
                         api_key = None
                     if not api_key:
                         raise ValueError(f"No API key configured for provider: {resolved_provider}")
-                    allowed_models = settings.provider_models_catalog.get(resolved_provider, [])
+                    allowed_models = catalog.get(resolved_provider, [])
                     allowed_ids = {entry.get("id") for entry in allowed_models if entry.get("id")}
                     if allowed_ids and model_input in allowed_ids:
                         resolved_model = model_input
                     else:
-                        resolved_model = settings.resolve_default_model(resolved_provider)
+                        resolved_model = settings.resolve_default_model(resolved_provider, catalog=catalog)
                 else:
-                    resolved_model = settings.resolve_default_model(resolved_provider)
+                    resolved_model = settings.resolve_default_model(resolved_provider, catalog=catalog)
             else:
-                resolved_model = settings.resolve_default_model(resolved_provider)
+                resolved_model = settings.resolve_default_model(resolved_provider, catalog=catalog)
         else:
-            resolved_model = settings.resolve_default_model(resolved_provider)
+            resolved_model = settings.resolve_default_model(resolved_provider, catalog=catalog)
 
     return LLMProviderFactory.create_provider(
         provider_name=resolved_provider,

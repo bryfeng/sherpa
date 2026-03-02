@@ -320,9 +320,14 @@ class Settings(BaseSettings):
             return self.has_zai_key
         return False
 
-    def resolve_default_model(self, provider: str) -> str:
+    def resolve_default_model(
+        self,
+        provider: str,
+        catalog: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> str:
         provider_lower = provider.lower()
-        options = self.provider_models_catalog.get(provider_lower, [])
+        source = catalog or self.provider_models_catalog
+        options = source.get(provider_lower, [])
         for option in options:
             default_flag = option.get("default")
             if isinstance(default_flag, str):
@@ -335,11 +340,16 @@ class Settings(BaseSettings):
             return options[0].get("id", self.llm_model)
         return self.llm_model
 
-    def resolve_provider_for_model(self, model_id: str) -> Optional[str]:
+    def resolve_provider_for_model(
+        self,
+        model_id: str,
+        catalog: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> Optional[str]:
         target = (model_id or "").strip().lower()
         if not target:
             return None
-        for provider, options in self.provider_models_catalog.items():
+        source = catalog or self.provider_models_catalog
+        for provider, options in source.items():
             for option in options:
                 option_id = option.get("id")
                 if option_id and option_id.lower() == target:
