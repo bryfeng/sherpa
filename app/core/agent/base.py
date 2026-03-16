@@ -25,7 +25,7 @@ from ...types.responses import ChatResponse
 from .events import SteeringMessage, ToolStarted, ToolCompleted, LLMStarted, LLMCompleted, LoopFinished
 from .panels import PANEL_BUILDERS
 from .styles import StyleManager, ResponseStyle
-from .tools import ToolContext, ToolRegistry, ToolExecutor
+from .tools import ToolContext, ToolRegistry, ToolExecutor, resolve_groups, get_tool_names_for_groups
 
 
 class AgentResponse(BaseModel):
@@ -296,10 +296,22 @@ class Agent:
                 tool_data["_quote_intent"] = quote_intent
             return response, tool_data
 
-        # Get tool definitions
-        tools = self.tool_registry.get_definitions()
-        tool_names = [t.name for t in tools]
-        self.logger.info(f"ReAct loop starting with {len(tools)} tools: {tool_names}")
+        # Get tool definitions (selective loading reduces input tokens)
+        if settings.tool_selective_loading:
+            user_message = request.messages[-1].content if request.messages else ""
+            active_groups = resolve_groups(user_message)
+            active_tool_names = get_tool_names_for_groups(active_groups)
+            tools = self.tool_registry.get_definitions(tool_names=active_tool_names)
+            group_names = sorted(g.value for g in active_groups)
+            self.logger.info(
+                "ReAct loop starting with %d/%d tools (groups: %s)",
+                len(tools),
+                len(self.tool_registry.get_definitions()),
+                group_names,
+            )
+        else:
+            tools = self.tool_registry.get_definitions()
+            self.logger.info("ReAct loop starting with %d tools (all)", len(tools))
 
         # Start the ReAct loop
         current_messages = list(messages)

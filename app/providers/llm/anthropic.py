@@ -106,15 +106,25 @@ class AnthropicProvider(LLMProvider):
                 "max_tokens": max_tokens or 4000,
             }
 
+            # System prompt as structured block with cache_control
             if system_message:
-                request_params["system"] = system_message
+                request_params["system"] = [
+                    {
+                        "type": "text",
+                        "text": system_message,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
 
             if temperature is not None:
                 request_params["temperature"] = temperature
 
-            # Add tools if provided
+            # Add tools with cache_control on the last definition
             if tools:
-                request_params["tools"] = [t.to_anthropic_format() for t in tools]
+                tool_defs = [t.to_anthropic_format() for t in tools]
+                if tool_defs:
+                    tool_defs[-1]["cache_control"] = {"type": "ephemeral"}
+                request_params["tools"] = tool_defs
 
             # Add any additional parameters (but not 'tools' again)
             kwargs.pop('tools', None)
@@ -147,13 +157,27 @@ class AnthropicProvider(LLMProvider):
             elif finish_reason == "end_turn":
                 finish_reason = "end_turn"
 
+            # Capture full token usage including cache metrics
+            usage = response.usage
+            input_tokens = getattr(usage, 'input_tokens', None)
+            cache_read = getattr(usage, 'cache_read_input_tokens', None)
+            cache_create = getattr(usage, 'cache_creation_input_tokens', None)
+            if input_tokens is not None:
+                self.logger.info(
+                    "tokens: in=%s out=%s cache_read=%s cache_create=%s",
+                    input_tokens, usage.output_tokens, cache_read, cache_create,
+                )
+
             return LLMResponse(
                 content=content if content else None,
                 tool_calls=tool_calls if tool_calls else None,
-                tokens_used=response.usage.output_tokens if hasattr(response, 'usage') else None,
+                tokens_used=usage.output_tokens if hasattr(response, 'usage') else None,
                 model=self.model,
                 finish_reason=finish_reason,
-                response_time_ms=response_time
+                response_time_ms=response_time,
+                input_tokens_used=input_tokens,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_create,
             )
 
         except anthropic.AuthenticationError as e:

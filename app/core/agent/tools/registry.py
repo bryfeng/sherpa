@@ -5,7 +5,7 @@ import importlib
 import inspect
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, Dict, List, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional, Set
 
 from ....providers.llm.base import ToolCall, ToolResult
 from .base import RegisteredTool, ToolSpec
@@ -68,9 +68,19 @@ class ToolRegistry:
             requires_address=requires_address,
         )
 
-    def get_definitions(self) -> list:
-        """Get all tool definitions for passing to the LLM."""
-        return [tool.definition for tool in self._tools.values()]
+    def get_definitions(self, tool_names: Optional[Set[str]] = None) -> list:
+        """Get tool definitions for passing to the LLM.
+
+        If *tool_names* is provided, only definitions whose name is in the set
+        are returned.  Pass ``None`` (default) to return all tools.
+        """
+        if tool_names is None:
+            return [tool.definition for tool in self._tools.values()]
+        return [
+            tool.definition
+            for name, tool in self._tools.items()
+            if name in tool_names
+        ]
 
     def get_tool(self, name: str) -> Optional[RegisteredTool]:
         """Get a registered tool by name."""

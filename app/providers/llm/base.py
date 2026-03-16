@@ -114,6 +114,10 @@ class LLMResponse(BaseModel):
     model: Optional[str] = None
     finish_reason: Optional[str] = None  # "end_turn", "tool_use", "max_tokens"
     response_time_ms: Optional[float] = None
+    # Prompt-caching metrics (Anthropic)
+    input_tokens_used: Optional[int] = None
+    cache_read_tokens: Optional[int] = None
+    cache_creation_tokens: Optional[int] = None
 
 
 class LLMProvider(ABC):

@@ -7,8 +7,8 @@ from ..config import settings
 router = APIRouter(prefix="/llm")
 
 
-def _serialise_providers():
-    providers_map = get_available_providers()
+async def _serialise_providers():
+    providers_map = await get_available_providers()
     providers_list = []
     for provider_id, info in providers_map.items():
         providers_list.append(
@@ -27,7 +27,7 @@ def _serialise_providers():
 
 @router.get("/providers")
 async def list_llm_providers():
-    providers = _serialise_providers()
+    providers = await _serialise_providers()
     default_provider = canonical_provider_name(settings.llm_provider)
 
     # Determine a sane default model that exists in the returned set

@@ -162,7 +162,7 @@ async def trigger_news_fetch(
         # Initialize ZAI LLM provider for news classification during fetch
         llm_provider = None
         try:
-            llm_provider = get_llm_provider("zai")
+            llm_provider = await get_llm_provider("zai")
             logger.info(f"Fetch cycle using ZAI LLM provider: {llm_provider.model}")
         except Exception as e:
             logger.warning(f"Failed to initialize ZAI provider for fetch: {e}")
@@ -210,7 +210,7 @@ async def trigger_news_processing(
         # Initialize ZAI LLM provider for news classification
         llm_provider = None
         try:
-            llm_provider = get_llm_provider("zai")
+            llm_provider = await get_llm_provider("zai")
             logger.info(f"Using ZAI LLM provider with model: {llm_provider.model}")
         except Exception as e:
             logger.warning(f"Failed to initialize ZAI provider, using rule-based fallback: {e}")
