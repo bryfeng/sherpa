@@ -356,6 +356,12 @@ class Settings(BaseSettings):
                     return provider
         return None
 
+    # Tool Loading
+    tool_selective_loading: bool = Field(
+        default=True,
+        description="Enable selective tool loading (keyword-based routing to reduce input tokens)",
+    )
+
     # Agent Runtime
     agent_runtime_enabled: bool = Field(
         default=True,
