@@ -1,7 +1,8 @@
 """
-Rate limiting middleware using Convex for storage.
+Rate limiting middleware using Redis (via state service) for storage.
 
 Implements a sliding window rate limiter with configurable limits per endpoint.
+Falls back to in-memory counters when Redis is unavailable.
 """
 
 import time
@@ -10,7 +11,7 @@ from fastapi import Request, HTTPException, status
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from app.db.convex_client import ConvexClient, get_convex_client, ConvexError
+from app.services.state import state_get_json, state_set_json
 
 
 class RateLimitExceeded(Exception):
@@ -45,17 +46,15 @@ PROVIDER_LIMITS: Dict[str, Dict[str, int]] = {
 
 class RateLimiter:
     """
-    Rate limiter using Convex for distributed storage.
+    Rate limiter using Redis (via state service) for distributed storage.
 
-    Implements sliding window rate limiting.
+    Implements sliding window rate limiting with in-memory fallback.
     """
 
     def __init__(
         self,
-        convex: Optional[ConvexClient] = None,
         limits: Optional[Dict[str, Dict[str, int]]] = None,
     ):
-        self.convex = convex or get_convex_client()
         self.limits = limits or DEFAULT_LIMITS
 
     def _get_limit_for_path(self, path: str) -> Dict[str, int]:
@@ -80,6 +79,8 @@ class RateLimiter:
         """
         Check if a request is within rate limits.
 
+        Uses a sliding-window counter stored in Redis (or in-memory fallback).
+
         Args:
             key: Unique key for this rate limit (e.g., "chat:0x123...")
             limit: Max requests allowed (uses default if not specified)
@@ -93,29 +94,28 @@ class RateLimiter:
         if window_seconds is None:
             window_seconds = 60
 
-        now = int(time.time() * 1000)  # Milliseconds for Convex
-        window_start = now - (window_seconds * 1000)
+        state_key = f"rl:{key}"
+        now = time.time()
+        window_start = now - window_seconds
 
         try:
-            result = await self.convex.mutation(
-                "rateLimit:checkAndIncrement",
-                {
-                    "key": key,
-                    "limit": limit,
-                    "windowSeconds": window_seconds,
-                    "now": now,
-                },
-            )
+            record = state_get_json(state_key) or {"timestamps": []}
+            # Prune expired entries
+            timestamps = [t for t in record["timestamps"] if t > window_start]
 
-            if not result.get("allowed", False):
-                retry_after = int(result.get("retryAfter", window_seconds))
-                raise RateLimitExceeded(limit, window_seconds, retry_after)
+            if len(timestamps) >= limit:
+                oldest = min(timestamps) if timestamps else now
+                retry_after = int(oldest + window_seconds - now) + 1
+                raise RateLimitExceeded(limit, window_seconds, max(retry_after, 1))
 
+            timestamps.append(now)
+            state_set_json(state_key, {"timestamps": timestamps}, ttl=window_seconds * 2)
             return True
 
-        except ConvexError:
-            # If Convex is unavailable, allow the request (fail open)
-            # In production, you might want to fail closed instead
+        except RateLimitExceeded:
+            raise
+        except Exception:
+            # Fail open if state service is broken
             return True
 
     async def check_request(

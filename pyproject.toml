@@ -25,6 +25,8 @@ dependencies = [
     "siwe>=4.0.0",
     "PyNaCl>=1.5.0",
     "PyJWT>=2.8.0",
+    "arq>=0.26",
+    "redis[hiredis]>=5.0.0",
 ]
 
 [project.optional-dependencies]
