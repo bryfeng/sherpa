@@ -40,8 +40,8 @@ def test_history_window_is_capped(monkeypatch):
         "/wallets/0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045/history-summary",
         params={
             "chain": "ethereum",
-            "start": (datetime.utcnow() - timedelta(days=365)).isoformat(),
-            "end": datetime.utcnow().isoformat(),
+            "start": (datetime.now(timezone.utc) - timedelta(days=365)).isoformat(),
+            "end": datetime.now(timezone.utc).isoformat(),
         },
     )
     assert resp.status_code == 200
@@ -58,8 +58,8 @@ def test_history_defaults_to_limit(monkeypatch):
             "walletAddress": kwargs["address"],
             "chain": kwargs["chain"],
             "timeWindow": {
-                "start": datetime.utcnow().isoformat(),
-                "end": datetime.utcnow().isoformat(),
+                "start": datetime.now(timezone.utc).isoformat(),
+                "end": datetime.now(timezone.utc).isoformat(),
             },
             "bucketSize": "day",
             "totals": {"inflow": 0, "outflow": 0, "inflowUsd": 0, "outflowUsd": 0, "feeUsd": 0},

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 class NewsCategory(str, Enum):
@@ -249,7 +249,7 @@ class ProcessedNews:
             related_sectors=related_sectors,
             related_categories=related_categories,
             importance=importance,
-            processed_at=datetime.utcnow(),
+            processed_at=datetime.now(timezone.utc),
         )
 
 

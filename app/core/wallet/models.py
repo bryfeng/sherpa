@@ -6,7 +6,7 @@ agent execution without requiring full wallet control.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
@@ -133,8 +133,8 @@ class SessionKey:
     token_allowlist: TokenAllowlist = field(default_factory=TokenAllowlist)
 
     # Timing
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    expires_at: datetime = field(default_factory=lambda: datetime.utcnow() + timedelta(hours=24))
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc) + timedelta(hours=24))
 
     # Status
     status: SessionKeyStatus = SessionKeyStatus.ACTIVE
@@ -156,7 +156,7 @@ class SessionKey:
         if self.status != SessionKeyStatus.ACTIVE:
             return False
         # Handle both naive and timezone-aware datetimes
-        now = datetime.now(self.expires_at.tzinfo) if self.expires_at.tzinfo else datetime.utcnow()
+        now = datetime.now(self.expires_at.tzinfo) if self.expires_at.tzinfo else datetime.now(timezone.utc)
         if now > self.expires_at:
             return False
         return True

@@ -7,7 +7,7 @@ Track and rank top Polymarket traders.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -110,7 +110,7 @@ class PolymarketLeaderboard:
             else:
                 self._leaderboard.append(entry)
 
-            self._last_updated = datetime.utcnow()
+            self._last_updated = datetime.now(timezone.utc)
             return entry
 
         except Exception as e:

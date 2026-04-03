@@ -7,7 +7,7 @@ are being prepared or executed concurrently.
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Set
 import httpx
 
@@ -22,7 +22,7 @@ class NonceState:
     confirmed_nonce: int                        # Last confirmed on-chain
     pending_nonce: int                          # Next available for use
     reserved_nonces: Set[int] = field(default_factory=set)
-    last_updated: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class NonceManager:
@@ -118,7 +118,7 @@ class NonceManager:
                     state.confirmed_nonce = on_chain_nonce
                     if on_chain_nonce > state.pending_nonce:
                         state.pending_nonce = on_chain_nonce
-                    state.last_updated = datetime.utcnow()
+                    state.last_updated = datetime.now(timezone.utc)
 
             state = self._states[key]
 
@@ -218,7 +218,7 @@ class NonceManager:
                 if on_chain_nonce > state.pending_nonce:
                     state.pending_nonce = on_chain_nonce
 
-                state.last_updated = datetime.utcnow()
+                state.last_updated = datetime.now(timezone.utc)
             else:
                 self._states[key] = NonceState(
                     address=address.lower(),

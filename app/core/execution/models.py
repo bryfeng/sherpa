@@ -3,7 +3,7 @@ Transaction execution models and types.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -63,7 +63,7 @@ class PreparedTransaction:
     description: str = ""
     quote_id: Optional[str] = None              # Relay requestId
     related_tx_ids: List[str] = field(default_factory=list)  # e.g., approval tx
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for signing."""

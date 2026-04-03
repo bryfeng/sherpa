@@ -7,7 +7,7 @@ Track and analyze Polymarket trader performance.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Dict, List, Optional
 from collections import defaultdict
@@ -68,7 +68,7 @@ class PolymarketTraderTracker:
         if not refresh and address in self._profile_cache:
             cached = self._profile_cache[address]
             if cached.last_analyzed_at:
-                age = datetime.utcnow() - cached.last_analyzed_at
+                age = datetime.now(timezone.utc) - cached.last_analyzed_at
                 if age < self._cache_ttl:
                     return cached
 
@@ -100,7 +100,7 @@ class PolymarketTraderTracker:
         trades_per_week = 0.0
         if trades:
             first_trade = min(t.timestamp for t in trades)
-            days_active = (datetime.utcnow() - first_trade).days or 1
+            days_active = (datetime.now(timezone.utc) - first_trade).days or 1
             trades_per_week = len(trades) / (days_active / 7)
 
         # Calculate diversification (based on number of categories and position spread)
@@ -126,7 +126,7 @@ class PolymarketTraderTracker:
             usesLeverage=False,  # Polymarket doesn't support leverage
             firstTradeAt=min((t.timestamp for t in trades), default=None) if trades else None,
             lastTradeAt=max((t.timestamp for t in trades), default=None) if trades else None,
-            lastAnalyzedAt=datetime.utcnow(),
+            lastAnalyzedAt=datetime.now(timezone.utc),
             dataQualityScore=min(1.0, len(trades) / 50),  # More trades = higher quality
             tradeCountForAnalysis=len(trades),
         )
@@ -328,7 +328,7 @@ class PolymarketTraderTracker:
         brier_score = self._calculate_brier_score(trades)
 
         # Volume in last 30 days
-        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+        thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
         volume_30d = sum(t.value_usd for t in trades if t.timestamp > thirty_days_ago)
 
         return PerformanceMetrics(

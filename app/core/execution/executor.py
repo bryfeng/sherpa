@@ -12,7 +12,7 @@ Handles the full lifecycle of transaction execution:
 import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -897,7 +897,7 @@ class TransactionExecutor:
                 tx_id=intent_result.intent_id or f"intent_{quote.request_id}",
                 chain_id=quote.chain_id,
                 status=TransactionStatus.SUBMITTED,
-                submitted_at=datetime.utcnow(),
+                submitted_at=datetime.now(timezone.utc),
             )
             result.output_data = {
                 "intent_id": intent_result.intent_id,
@@ -915,7 +915,7 @@ class TransactionExecutor:
                     )
                     if final_result.status == IntentStatus.COMPLETED:
                         result.status = TransactionStatus.CONFIRMED
-                        result.confirmed_at = datetime.utcnow()
+                        result.confirmed_at = datetime.now(timezone.utc)
                         if final_result.tx_hashes:
                             result.tx_hash = final_result.tx_hashes[0]
                     else:
@@ -1038,7 +1038,7 @@ class TransactionExecutor:
                 tx_id=intent_result.intent_id or f"intent_{quote.request_id}",
                 chain_id=quote.origin_chain_id,
                 status=TransactionStatus.SUBMITTED,
-                submitted_at=datetime.utcnow(),
+                submitted_at=datetime.now(timezone.utc),
             )
             result.output_data = {
                 "intent_id": intent_result.intent_id,
@@ -1055,7 +1055,7 @@ class TransactionExecutor:
                     )
                     if final_result.status == IntentStatus.COMPLETED:
                         result.status = TransactionStatus.CONFIRMED
-                        result.confirmed_at = datetime.utcnow()
+                        result.confirmed_at = datetime.now(timezone.utc)
                         if final_result.tx_hashes:
                             result.tx_hash = final_result.tx_hashes[0]
                     else:
@@ -1139,7 +1139,7 @@ class TransactionExecutor:
                 tx_hash = await self._submit_raw_transaction(tx.chain_id, signed_tx)
                 result.tx_hash = tx_hash
                 result.status = TransactionStatus.SUBMITTED
-                result.submitted_at = datetime.utcnow()
+                result.submitted_at = datetime.now(timezone.utc)
 
                 # Monitor for confirmation
                 result = await self._monitor_transaction(
@@ -1287,7 +1287,7 @@ class TransactionExecutor:
 
         result.tx_hash = send_result.user_op_hash
         result.status = TransactionStatus.SUBMITTED
-        result.submitted_at = datetime.utcnow()
+        result.submitted_at = datetime.now(timezone.utc)
         return result
 
     async def _execute_userop_via_wallet_api(
@@ -1353,7 +1353,7 @@ class TransactionExecutor:
 
         prepared_call_ids = send_result.get("preparedCallIds") or []
         result.status = TransactionStatus.SUBMITTED
-        result.submitted_at = datetime.utcnow()
+        result.submitted_at = datetime.now(timezone.utc)
         result.output_data = {
             "preparedCallIds": prepared_call_ids,
             "signatureRequest": prepared.get("signatureRequest"),
@@ -1420,11 +1420,11 @@ class TransactionExecutor:
     ) -> TransactionResult:
         """Internal monitoring implementation."""
         result = initial_result
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         poll_interval = 2  # seconds
 
         while True:
-            elapsed = (datetime.utcnow() - start_time).total_seconds()
+            elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
             if elapsed > timeout:
                 result.status = TransactionStatus.TIMEOUT
                 result.error = f"Confirmation timeout after {timeout}s"
@@ -1461,7 +1461,7 @@ class TransactionExecutor:
 
                     if confirmations >= required_confirmations:
                         result.status = TransactionStatus.CONFIRMED
-                        result.confirmed_at = datetime.utcnow()
+                        result.confirmed_at = datetime.now(timezone.utc)
                         logger.info(
                             f"Transaction confirmed: {tx_hash} "
                             f"(block {result.block_number}, {confirmations} confirmations)"

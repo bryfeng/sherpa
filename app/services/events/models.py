@@ -6,7 +6,7 @@ Data structures for event monitoring, webhooks, and activity tracking.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional, Callable, Awaitable
@@ -232,7 +232,7 @@ class WalletActivity(BaseModel):
     copy_relevance_score: float = 0.0
 
     # Metadata
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     processed_at: Optional[datetime] = None
 
 
@@ -263,8 +263,8 @@ class Subscription(BaseModel):
 
     # Metadata
     label: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_activity_at: Optional[datetime] = None
     error_message: Optional[str] = None
 
@@ -292,7 +292,7 @@ class WebhookPayload(BaseModel):
     raw: Dict[str, Any] = Field(default_factory=dict)
 
     # Metadata
-    received_at: datetime = Field(default_factory=datetime.utcnow)
+    received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class WebhookConfig(BaseModel):
@@ -319,4 +319,4 @@ class WebhookRegistration(BaseModel):
     addresses: List[str]
     webhook_url: str
     status: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -442,7 +442,7 @@ class PlanningService:
             agent_config=agent_config,
             portfolio=await self._get_portfolio_snapshot(context),
             market_data=market_data or {},
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
 
         # Evaluate strategy
@@ -453,7 +453,7 @@ class PlanningService:
             decision_id=str(uuid.uuid4()),
             agent_id=agent_config.agent_id,
             strategy_type=agent_config.type.value,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             inputs={"market_data": market_data or {}},
             features={},
             policy=agent_config.policy.model_dump(),
@@ -511,7 +511,7 @@ class PlanningService:
             balances={},
             usd_values={},
             total_usd=Decimal("0"),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
 
     # -------------------------------------------------------------------------
@@ -534,7 +534,7 @@ class PlanningService:
         plan = self._pending_plans.get(conversation_id)
         if plan and plan.status == PlanStatus.PENDING_APPROVAL:
             plan.status = PlanStatus.APPROVED
-            plan.updated_at = datetime.utcnow()
+            plan.updated_at = datetime.now(timezone.utc)
             return plan
         return None
 
@@ -550,7 +550,7 @@ class PlanningService:
         plan = self._pending_plans.pop(conversation_id, None)
         if plan:
             plan.status = PlanStatus.CANCELLED
-            plan.updated_at = datetime.utcnow()
+            plan.updated_at = datetime.now(timezone.utc)
         return plan
 
     def clear_pending(self, conversation_id: str) -> None:

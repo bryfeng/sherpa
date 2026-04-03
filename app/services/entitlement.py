@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_FLOOR
 from typing import Optional
 
@@ -111,7 +111,7 @@ async def evaluate_entitlement(address: str, chain: Optional[str] = None) -> Ent
         await cache.set(cache_key, response, ttl=60)
         return response
 
-    checked_at = datetime.utcnow()
+    checked_at = datetime.now(timezone.utc)
     pro = False
     reason: Optional[str] = None
     metadata: dict[str, str | int | float | Decimal] = {}

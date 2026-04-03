@@ -9,7 +9,7 @@ Manages the lifecycle of session keys:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Set
 
@@ -142,7 +142,7 @@ class SessionKeyManager:
             token_allowlist=TokenAllowlist(
                 allowed_tokens=allowed_tokens or set()
             ),
-            expires_at=datetime.utcnow() + timedelta(hours=expires_in_hours),
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=expires_in_hours),
         )
 
         # Store in Convex
@@ -298,7 +298,7 @@ class SessionKeyManager:
             warnings.append(f"Only ${remaining_value} value remaining")
 
         # Check expiry
-        time_remaining = session.expires_at - datetime.utcnow()
+        time_remaining = session.expires_at - datetime.now(timezone.utc)
         if time_remaining < timedelta(hours=1):
             warnings.append(f"Session expires in {time_remaining}")
 
@@ -331,7 +331,7 @@ class SessionKeyManager:
 
         # Update limits
         session.value_limits.record_transaction(value_usd)
-        session.last_used_at = datetime.utcnow()
+        session.last_used_at = datetime.now(timezone.utc)
 
         # Check if limits exhausted
         if session.value_limits.max_transactions:
@@ -349,12 +349,12 @@ class SessionKeyManager:
                 "transactionCount": session.value_limits.transaction_count,
                 "totalValueUsedUsd": str(session.value_limits.total_value_used_usd),
                 "status": session.status.value,
-                "lastUsedAt": int(datetime.utcnow().timestamp() * 1000),
+                "lastUsedAt": int(datetime.now(timezone.utc).timestamp() * 1000),
                 "usageEntry": {
                     "actionType": action_type.value,
                     "valueUsd": str(value_usd),
                     "txHash": tx_hash,
-                    "timestamp": int(datetime.utcnow().timestamp() * 1000),
+                    "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
                     "metadata": metadata,
                 },
             },
@@ -383,7 +383,7 @@ class SessionKeyManager:
         """
         session = await self.get_session(session_id, validate=False)
         session.status = SessionKeyStatus.REVOKED
-        session.revoked_at = datetime.utcnow()
+        session.revoked_at = datetime.now(timezone.utc)
         session.revoke_reason = reason
 
         # Update in Convex
@@ -444,7 +444,7 @@ class SessionKeyManager:
         """
         result = await self.convex.mutation(
             "sessionKeys:cleanupExpired",
-            {"now": int(datetime.utcnow().timestamp() * 1000)},
+            {"now": int(datetime.now(timezone.utc).timestamp() * 1000)},
         )
 
         count = result.get("expiredCount", 0) if result else 0
@@ -470,7 +470,7 @@ class SessionKeyManager:
                 f"Session {session.session_id} has exhausted its limits"
             )
 
-        if datetime.utcnow() > session.expires_at:
+        if datetime.now(timezone.utc) > session.expires_at:
             raise SessionExpiredError(
                 f"Session {session.session_id} expired at {session.expires_at}"
             )

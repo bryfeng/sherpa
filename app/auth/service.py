@@ -4,7 +4,7 @@ Authentication service using wallet sign-in (EVM SIWE + Solana sign-in).
 
 import secrets
 import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from siwe import SiweMessage, VerificationError
@@ -70,7 +70,7 @@ class AuthService:
         # SIWE spec (EIP-4361) requires alphanumeric nonce only - no special characters
         # Use token_hex which generates hex characters (0-9, a-f)
         nonce = secrets.token_hex(16)
-        expires_at = datetime.utcnow() + timedelta(minutes=NONCE_EXPIRE_MINUTES)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=NONCE_EXPIRE_MINUTES)
 
         # Store nonce in Convex
         await self.convex.mutation(
@@ -143,7 +143,7 @@ class AuthService:
             session_id=session_id,
         )
 
-        expires_at = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
         # Store session in Convex
         await self.convex.mutation(
@@ -211,7 +211,7 @@ class AuthService:
                 session_id=new_session_id,
             )
 
-            expires_at = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
             # Update session in Convex
             await self.convex.mutation(
@@ -286,7 +286,7 @@ class AuthService:
         scopes: list,
     ) -> str:
         """Generate a JWT access token."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         payload = {
             "sub": wallet_address,
             "session_id": session_id,
@@ -306,7 +306,7 @@ class AuthService:
         session_id: str,
     ) -> str:
         """Generate a JWT refresh token."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         payload = {
             "sub": wallet_address,
             "session_id": session_id,

@@ -1,7 +1,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,6 @@ def record_history_summary(address: str, metrics: HistoryMetrics) -> None:
             "cache_hit": metrics.cache_hit,
             "events": metrics.events_count,
             "comparison": metrics.comparison,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     )

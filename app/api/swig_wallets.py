@@ -10,7 +10,7 @@ Endpoints for Solana Swig Smart Wallet management:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -204,7 +204,7 @@ async def create_session(
         provider = get_swig_provider()
 
         # Calculate expiration
-        expires_at = datetime.utcnow() + timedelta(days=request.validity_days)
+        expires_at = datetime.now(timezone.utc) + timedelta(days=request.validity_days)
 
         authority = await provider.create_session_authority(
             wallet_address=wallet_address,

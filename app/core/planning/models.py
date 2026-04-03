@@ -11,7 +11,7 @@ This module defines:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
@@ -331,8 +331,8 @@ class Plan:
     agent_id: Optional[str] = None
     conversation_id: Optional[str] = None
     decision_log: Optional[DecisionLog] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     warnings: List[str] = field(default_factory=list)
 
     def total_estimated_usd(self) -> Decimal:

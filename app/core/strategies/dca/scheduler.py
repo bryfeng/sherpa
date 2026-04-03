@@ -6,7 +6,7 @@ Calculates next execution times based on frequency configuration.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .models import DCAConfig, DCAFrequency
@@ -31,7 +31,7 @@ class DCAScheduler:
             Next scheduled execution datetime (UTC)
         """
         if after is None:
-            after = datetime.utcnow()
+            after = datetime.now(timezone.utc)
 
         frequency = config.frequency
 

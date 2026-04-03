@@ -7,7 +7,7 @@ Tests the cost-efficient batch LLM processing of news items.
 import asyncio
 import json
 import pytest
-from datetime import datetime
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from app.services.news_fetcher.batch_processor import (
@@ -37,7 +37,7 @@ def sample_news_items():
             source="rss:coindesk",
             title="Ethereum Completes Major Upgrade",
             url="https://example.com/1",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
             summary="Ethereum successfully completes the Dencun upgrade.",
             raw_content="The Ethereum network has successfully completed...",
         ),
@@ -46,7 +46,7 @@ def sample_news_items():
             source="rss:cointelegraph",
             title="SEC Approves New Bitcoin ETF",
             url="https://example.com/2",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
             summary="The SEC has approved another spot Bitcoin ETF.",
         ),
         NewsItem(
@@ -54,7 +54,7 @@ def sample_news_items():
             source="api:coingecko",
             title="DeFi Protocol Loses $50M in Exploit",
             url="https://example.com/3",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
             summary="A major DeFi protocol suffered a flash loan exploit.",
         ),
     ]
@@ -281,7 +281,7 @@ class TestBatchNewsProcessor:
                 source="test",
                 title=f"Test {i}",
                 url=f"https://example.com/{i}",
-                published_at=datetime.utcnow(),
+                published_at=datetime.now(timezone.utc),
             )
             for i in range(5)
         ]
@@ -337,7 +337,7 @@ class TestRuleBasedClassification:
             source="test",
             title="Protocol Suffers $100M Hack",
             url="https://example.com/1",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
             summary="Hackers exploited a vulnerability to steal funds.",
         )
         processed = processor._process_item_with_rules(item)
@@ -351,7 +351,7 @@ class TestRuleBasedClassification:
             source="test",
             title="SEC Files Lawsuit Against Exchange",
             url="https://example.com/1",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
         )
         processed = processor._process_item_with_rules(item)
         assert processed.category == NewsCategory.REGULATORY
@@ -363,7 +363,7 @@ class TestRuleBasedClassification:
             source="test",
             title="Network Completes Hard Fork Upgrade",
             url="https://example.com/1",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
         )
         processed = processor._process_item_with_rules(item)
         assert processed.category == NewsCategory.UPGRADE
@@ -375,7 +375,7 @@ class TestRuleBasedClassification:
             source="test",
             title="Protocol Announces Integration with Major Exchange",
             url="https://example.com/1",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
         )
         processed = processor._process_item_with_rules(item)
         assert processed.category == NewsCategory.PARTNERSHIP
@@ -387,7 +387,7 @@ class TestRuleBasedClassification:
             source="test",
             title="ETH and BTC Rally as Market Recovers",
             url="https://example.com/1",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
             summary="ETH leads the rally with 10% gains.",
         )
         processed = processor._process_item_with_rules(item)
@@ -403,7 +403,7 @@ class TestRuleBasedClassification:
             source="test",
             title="New DeFi DEX Launches with Innovative Yield Farming",
             url="https://example.com/1",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
         )
         processed = processor._process_item_with_rules(item)
         assert "DeFi" in processed.related_sectors
@@ -496,7 +496,7 @@ class TestEdgeCases:
             source="test",
             title="News",
             url="https://example.com/1",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
         )
 
         processor = BatchNewsProcessor(llm_provider=None)

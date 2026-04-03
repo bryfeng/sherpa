@@ -5,7 +5,7 @@ Tests the DCA models, scheduler, executor, and service.
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -363,7 +363,7 @@ class TestDCAExecutor:
         """Test session key validation with expired key."""
         mock_convex_client.query.return_value = {
             "status": "active",
-            "expiresAt": int((datetime.utcnow() - timedelta(hours=1)).timestamp() * 1000),
+            "expiresAt": int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000),
             "valueLimits": {"totalValueUsedUsd": "0", "maxTotalValueUsd": "10000"},
         }
 
@@ -376,7 +376,7 @@ class TestDCAExecutor:
         """Test session key validation with exhausted value."""
         mock_convex_client.query.return_value = {
             "status": "active",
-            "expiresAt": int((datetime.utcnow() + timedelta(days=7)).timestamp() * 1000),
+            "expiresAt": int((datetime.now(timezone.utc) + timedelta(days=7)).timestamp() * 1000),
             "valueLimits": {"totalValueUsedUsd": "10000", "maxTotalValueUsd": "10000"},
         }
 
@@ -389,7 +389,7 @@ class TestDCAExecutor:
         """Test session key validation with valid key."""
         mock_convex_client.query.return_value = {
             "status": "active",
-            "expiresAt": int((datetime.utcnow() + timedelta(days=7)).timestamp() * 1000),
+            "expiresAt": int((datetime.now(timezone.utc) + timedelta(days=7)).timestamp() * 1000),
             "valueLimits": {"totalValueUsedUsd": "500", "maxTotalValueUsd": "10000"},
         }
 

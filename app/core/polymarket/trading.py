@@ -8,7 +8,7 @@ Handles portfolio management, trade quotes, and AI-powered analysis.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -247,7 +247,7 @@ class PolymarketTradingService:
             openPositionsCount=len(enriched_positions),
             winningPositions=winning,
             losingPositions=losing,
-            updatedAt=datetime.utcnow(),
+            updatedAt=datetime.now(timezone.utc),
         )
 
     # =========================================================================
@@ -499,7 +499,7 @@ class PolymarketTradingService:
             sentiment="neutral",
             confidence=0.5,
             volumeTrend="stable",
-            analyzedAt=datetime.utcnow(),
+            analyzedAt=datetime.now(timezone.utc),
         )
 
         # If LLM provider available, enhance with AI analysis
