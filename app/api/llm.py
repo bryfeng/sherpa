@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter
 
 from ..providers.llm import get_available_providers, canonical_provider_name
@@ -47,5 +47,5 @@ async def list_llm_providers():
         "providers": providers,
         "default_provider": default_provider,
         "default_model": preferred_default_model,
-        "fetched_at": datetime.utcnow().isoformat() + "Z",
+        "fetched_at": datetime.now(timezone.utc).isoformat() + "Z",
     }

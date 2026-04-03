@@ -17,7 +17,7 @@ Key Design Principle:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Union
@@ -101,7 +101,7 @@ class TradeIntent:
     confidence: float = 1.0
     reasoning: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence <= 1.0:
@@ -160,7 +160,7 @@ class StrategyContext:
     agent_config: AgentConfig
     portfolio: PortfolioSnapshot
     market_data: Dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     previous_decisions: List[Dict[str, Any]] = field(default_factory=list)
 
     def get_price(self, symbol: str) -> Optional[Decimal]:

@@ -6,7 +6,7 @@ Models for portfolio, analysis, and trade execution.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -67,7 +67,7 @@ class PolymarketPortfolio(BaseModel):
     losing_positions: int = Field(0, alias="losingPositions")
 
     # Timestamp
-    updated_at: datetime = Field(default_factory=datetime.utcnow, alias="updatedAt")
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), alias="updatedAt")
 
     class Config:
         populate_by_name = True
@@ -98,7 +98,7 @@ class MarketAnalysis(BaseModel):
     volume_trend: str = Field("stable", alias="volumeTrend")  # increasing, decreasing, stable
 
     # Meta
-    analyzed_at: datetime = Field(default_factory=datetime.utcnow, alias="analyzedAt")
+    analyzed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), alias="analyzedAt")
 
     class Config:
         populate_by_name = True
@@ -158,7 +158,7 @@ class TradeResult(BaseModel):
     error_message: Optional[str] = Field(None, alias="errorMessage")
 
     # Timestamps
-    executed_at: datetime = Field(default_factory=datetime.utcnow, alias="executedAt")
+    executed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), alias="executedAt")
 
     class Config:
         populate_by_name = True

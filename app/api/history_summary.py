@@ -60,7 +60,7 @@ async def get_wallet_history_summary(
         snapshot, _ = await get_history_snapshot(address=address, chain=normalized_chain, limit=effective_limit)
     else:
         if not start or not end:
-            end = datetime.utcnow()
+            end = datetime.now(timezone.utc)
             window_span = windowDays or 30
             start = end - timedelta(days=window_span)
         requested_window = (start, end)

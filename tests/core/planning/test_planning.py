@@ -9,7 +9,7 @@ Tests cover:
 - DCAStrategy (strategy evaluation)
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -471,7 +471,7 @@ class TestDCAStrategy:
             balances={"USDC": Decimal("1000")},
             usd_values={"USDC": Decimal("1000")},
             total_usd=Decimal("1000"),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
 
         # We need an AgentConfig for the context
@@ -516,7 +516,7 @@ class TestDCAStrategy:
             balances={"USDC": Decimal("50")},
             usd_values={"USDC": Decimal("50")},  # Less than 100
             total_usd=Decimal("50"),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
 
         agent_config = AgentConfig(

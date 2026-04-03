@@ -16,12 +16,12 @@ Design Principle:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .models import ChainId, PolicyConstraints
 
@@ -59,8 +59,7 @@ class WalletConfig(BaseModel):
     address: str = Field(..., description="Wallet address")
     is_primary: bool = Field(default=True, description="Whether this is the primary wallet")
 
-    class Config:
-        frozen = True
+    model_config = ConfigDict(frozen=True)
 
 
 class ScheduleConfig(BaseModel):
@@ -108,8 +107,7 @@ class PolicyConfig(BaseModel):
     auto_approve_threshold_usd: Decimal = Field(default=Decimal("100"))
     require_explicit_approval: bool = Field(default=False)
 
-    class Config:
-        json_encoders = {Decimal: str}
+    model_config = ConfigDict(json_encoders={Decimal: str})
 
     def to_policy_constraints(self) -> PolicyConstraints:
         """Convert to PolicyConstraints dataclass."""
@@ -133,8 +131,7 @@ class DCAStrategyParams(BaseModel):
     allocation: Dict[str, float] = Field(..., description="Allocation weights")
     default_chain: Union[int, str] = Field(default=1, description="Default chain for swaps")
 
-    class Config:
-        json_encoders = {Decimal: str}
+    model_config = ConfigDict(json_encoders={Decimal: str})
 
     def validate_allocation(self) -> List[str]:
         """Validate allocation weights sum to 1.0."""
@@ -179,15 +176,16 @@ class AgentConfig(BaseModel):
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig, description="Schedule config")
     status: AgentStatus = Field(default=AgentStatus.ACTIVE, description="Agent status")
     owner: Optional[str] = Field(default=None, description="Owner address")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="Creation time")
-    updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update time")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Creation time")
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Last update time")
 
-    class Config:
-        json_encoders = {
+    model_config = ConfigDict(
+        json_encoders={
             Decimal: str,
             datetime: lambda v: v.isoformat(),
-        }
-        use_enum_values = True
+        },
+        use_enum_values=True,
+    )
 
     def get_primary_wallet(self, chain_id: Optional[ChainId] = None) -> Optional[WalletConfig]:
         """Get the primary wallet, optionally for a specific chain."""
@@ -237,7 +235,7 @@ class PlanningContext:
     conversation_id: Optional[str] = None
     agent_config: Optional[AgentConfig] = None
     portfolio_tokens: Optional[List[Dict[str, Any]]] = None
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def get_default_policy(self) -> PolicyConstraints:
         """Get policy constraints from agent config or defaults."""

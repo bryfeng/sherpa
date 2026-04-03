@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 from .portfolio import Portfolio
@@ -29,6 +29,6 @@ class EntitlementResponse(BaseModel):
     token_address: Optional[str] = Field(default=None, description="Entitlement token contract address")
     token_id: Optional[str] = Field(default=None, description="Specific token ID for ERC-1155 gating")
     reason: Optional[str] = Field(default=None, description="Explanation when Pro access is unavailable")
-    checked_at: datetime = Field(default_factory=datetime.utcnow, description="Timestamp of evaluation")
+    checked_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="Timestamp of evaluation")
     cached: bool = Field(default=False, description="Indicates whether the result was served from cache")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional entitlement metadata")

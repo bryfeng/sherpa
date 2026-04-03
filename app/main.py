@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -15,13 +17,56 @@ setup_logging()
 import structlog
 logger = structlog.stdlib.get_logger(__name__)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Startup ---
+    # Initialize chain registry
+    from .core.bridge.chain_registry import init_chain_registry
+    try:
+        registry = await init_chain_registry()
+        logger.info(
+            "Chain registry initialized: %d chains available",
+            registry.chain_count,
+        )
+    except Exception as e:
+        logger.warning("Failed to initialize chain registry: %s", e)
+
+    # Start agent runtime
+    if settings.agent_runtime_enabled:
+        register_builtin_strategies()
+        await get_runtime().ensure_started()
+
+    # Start copy trading bridge
+    if getattr(settings, "copy_trading_enabled", True):
+        try:
+            from .core.copy_trading import start_copy_trading_bridge
+            await start_copy_trading_bridge()
+        except Exception as e:
+            logger.warning(f"Failed to start copy trading bridge: {e}")
+
+    yield
+
+    # --- Shutdown ---
+    runtime = get_runtime()
+    if runtime.is_running:
+        await runtime.stop()
+
+    try:
+        from .core.copy_trading import stop_copy_trading_bridge
+        await stop_copy_trading_bridge()
+    except Exception:
+        pass
+
+
 # Create FastAPI app
 app = FastAPI(
     title="Agentic Wallet API",
     description="Research-focused Web3 wallet explorer backend",
     version="0.1.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # Add CORS middleware - configured for security
@@ -64,7 +109,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc)},
+        content={"detail": "Internal server error"},
         headers=headers,
     )
 
@@ -111,65 +156,6 @@ async def root():
         "docs": "/docs",
         "health": "/healthz"
     }
-
-
-@app.on_event("startup")
-async def _init_chain_registry() -> None:
-    """Initialize the chain registry at startup.
-
-    This fetches supported chains from Relay API and makes them available
-    for bridge/swap operations. The registry is cached so this only makes
-    one API call at startup.
-    """
-    import logging
-    from .core.bridge.chain_registry import init_chain_registry
-
-    logger = logging.getLogger(__name__)
-    try:
-        registry = await init_chain_registry()
-        logger.info(
-            "Chain registry initialized: %d chains available",
-            registry.chain_count,
-        )
-    except Exception as e:
-        logger.warning("Failed to initialize chain registry: %s", e)
-
-
-@app.on_event("startup")
-async def _start_runtime() -> None:
-    if not settings.agent_runtime_enabled:
-        return
-    register_builtin_strategies()
-    await get_runtime().ensure_started()
-
-
-@app.on_event("startup")
-async def _start_copy_trading_bridge() -> None:
-    """Start the copy trading event bridge."""
-    if getattr(settings, "copy_trading_enabled", True):
-        try:
-            from .core.copy_trading import start_copy_trading_bridge
-            await start_copy_trading_bridge()
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(f"Failed to start copy trading bridge: {e}")
-
-
-@app.on_event("shutdown")
-async def _stop_runtime() -> None:
-    runtime = get_runtime()
-    if runtime.is_running:
-        await runtime.stop()
-
-
-@app.on_event("shutdown")
-async def _stop_copy_trading_bridge() -> None:
-    """Stop the copy trading event bridge."""
-    try:
-        from .core.copy_trading import stop_copy_trading_bridge
-        await stop_copy_trading_bridge()
-    except Exception:
-        pass
 
 
 if __name__ == "__main__":

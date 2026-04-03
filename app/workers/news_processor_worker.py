@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.services.news_fetcher.batch_processor import (
@@ -112,7 +112,7 @@ class NewsProcessorWorker:
         Returns:
             WorkerResult with statistics
         """
-        started_at = datetime.utcnow()
+        started_at = datetime.now(timezone.utc)
         errors: List[str] = []
         items_updated = 0
         items_failed = 0
@@ -129,7 +129,7 @@ class NewsProcessorWorker:
                     )
                     return WorkerResult(
                         started_at=started_at,
-                        ended_at=datetime.utcnow(),
+                        ended_at=datetime.now(timezone.utc),
                         items_fetched=0,
                         items_processed=0,
                         items_updated=0,
@@ -145,10 +145,10 @@ class NewsProcessorWorker:
 
             if not raw_items:
                 logger.info("No unprocessed items found")
-                self._last_run = datetime.utcnow()
+                self._last_run = datetime.now(timezone.utc)
                 return WorkerResult(
                     started_at=started_at,
-                    ended_at=datetime.utcnow(),
+                    ended_at=datetime.now(timezone.utc),
                     items_fetched=0,
                     items_processed=0,
                     items_updated=0,
@@ -183,13 +183,13 @@ class NewsProcessorWorker:
                     errors.append(f"Update error: {str(e)}")
                     items_failed += 1
 
-            self._last_run = datetime.utcnow()
+            self._last_run = datetime.now(timezone.utc)
 
         except Exception as e:
             logger.error(f"Worker error: {e}")
             errors.append(str(e))
 
-        ended_at = datetime.utcnow()
+        ended_at = datetime.now(timezone.utc)
 
         result = WorkerResult(
             started_at=started_at,

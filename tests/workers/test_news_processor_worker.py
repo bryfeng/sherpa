@@ -6,7 +6,7 @@ Tests the background worker that processes unprocessed news items.
 
 import asyncio
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.workers.news_processor_worker import (
@@ -39,7 +39,7 @@ def mock_llm_provider():
 @pytest.fixture
 def sample_unprocessed_items():
     """Sample unprocessed items from Convex."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     return [
         {
             "_id": "item1",
@@ -253,7 +253,7 @@ class TestNewsProcessorWorker:
             source="test",
             title="Test",
             url="https://example.com",
-            published_at=datetime.utcnow(),
+            published_at=datetime.now(timezone.utc),
             category=NewsCategory.UPGRADE,
             sentiment=Sentiment.from_score(0.5, 0.8),
             summary="Test summary",
@@ -341,7 +341,7 @@ class TestEdgeCases:
                 "source": "test",
                 "title": "Valid item",
                 "url": "https://example.com",
-                "publishedAt": int(datetime.utcnow().timestamp() * 1000),
+                "publishedAt": int(datetime.now(timezone.utc).timestamp() * 1000),
             },
         ]
         mock_convex_client.mutation.return_value = None
@@ -363,7 +363,7 @@ class TestEdgeCases:
                 "source": "test",
                 "title": f"News {i}",
                 "url": f"https://example.com/{i}",
-                "publishedAt": int(datetime.utcnow().timestamp() * 1000),
+                "publishedAt": int(datetime.now(timezone.utc).timestamp() * 1000),
             }
             for i in range(25)
         ]

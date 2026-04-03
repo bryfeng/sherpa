@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from .models import (
@@ -118,7 +118,7 @@ class BatchNewsProcessor:
         Returns:
             Tuple of (processed items, statistics)
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         stats = ProcessingStats(total_items=len(items))
 
         if not items:
@@ -152,7 +152,7 @@ class BatchNewsProcessor:
                 all_results.extend(result)
 
         stats.processed_items = len(all_results)
-        stats.duration_seconds = (datetime.utcnow() - start_time).total_seconds()
+        stats.duration_seconds = (datetime.now(timezone.utc) - start_time).total_seconds()
 
         return all_results, stats
 
@@ -455,7 +455,7 @@ class BatchNewsProcessor:
 
     def _check_daily_reset(self):
         """Reset daily token counter if new day."""
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         if self._last_reset_date != today:
             self._tokens_used_today = 0
             self._last_reset_date = today

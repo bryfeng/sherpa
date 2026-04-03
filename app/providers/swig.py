@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -95,7 +95,7 @@ class SwigSessionAuthority:
         """Check if session is active and not expired."""
         if self.status != "active":
             return False
-        if self.expires_at and self.expires_at < datetime.utcnow():
+        if self.expires_at and self.expires_at < datetime.now(timezone.utc):
             return False
         return True
 
@@ -151,7 +151,7 @@ class SwigProvider(Provider):
             spending_limit_usd=Decimal("100"),
             allowed_programs=["JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"],
             allowed_actions=["swap"],
-            expires_at=datetime.utcnow() + timedelta(days=7),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
         )
 
         # Validate session before execution

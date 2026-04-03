@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -316,7 +316,7 @@ class PolymarketClient:
 
         markets = await self.get_markets(active=True, limit=500)
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         cutoff = now + timedelta(hours=hours)
 
         closing = [
@@ -412,7 +412,7 @@ class PolymarketClient:
                     OrderBookLevel(price=Decimal(str(a["price"])), size=Decimal(str(a["size"])))
                     for a in data.get("asks", [])
                 ],
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
             )
 
         except httpx.HTTPError as e:
@@ -675,7 +675,7 @@ class PolymarketClient:
             fee=Decimal(str(data.get("fee", 0))),
             makerAddress=data.get("makerAddress", data.get("maker_address", "")),
             takerAddress=data.get("takerAddress", data.get("taker_address")),
-            timestamp=self._parse_datetime(data.get("timestamp")) or datetime.utcnow(),
+            timestamp=self._parse_datetime(data.get("timestamp")) or datetime.now(timezone.utc),
             transactionHash=data.get("transactionHash", data.get("transaction_hash")),
         )
 

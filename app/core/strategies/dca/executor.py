@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Optional, Tuple, Union
 
@@ -292,7 +292,7 @@ class DCAExecutor:
 
             # Check expiry
             expires_at = session_key.get("expiresAt", 0)
-            if expires_at < datetime.utcnow().timestamp() * 1000:
+            if expires_at < datetime.now(timezone.utc).timestamp() * 1000:
                 return False, "Session key expired"
 
             # Check value limits
@@ -332,7 +332,7 @@ class DCAExecutor:
 
             # Check expiry
             valid_until = smart_session.get("validUntil", 0)
-            if valid_until < datetime.utcnow().timestamp() * 1000:
+            if valid_until < datetime.now(timezone.utc).timestamp() * 1000:
                 return False, "Smart Session expired"
 
             # Check spending limit
@@ -949,7 +949,7 @@ class DCAExecutor:
             {
                 "strategyId": strategy_id,
                 "executionNumber": execution_number,
-                "scheduledAt": int(datetime.utcnow().timestamp() * 1000),
+                "scheduledAt": int(datetime.now(timezone.utc).timestamp() * 1000),
                 "chainId": chain_id,  # Can be int or "solana"
             },
         )

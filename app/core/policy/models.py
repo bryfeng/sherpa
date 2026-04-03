@@ -5,7 +5,7 @@ Defines the core types for the unified policy enforcement system.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -73,7 +73,7 @@ class PolicyResult:
     approval_reason: Optional[str] = None
 
     # Metadata
-    evaluated_at: datetime = field(default_factory=datetime.utcnow)
+    evaluated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     evaluation_time_ms: float = 0.0
 
     @property

@@ -8,7 +8,7 @@ Supports both EVM chains (int chain IDs) and Solana (str chain ID).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
@@ -267,8 +267,8 @@ class DCAStrategy:
     stats: DCAStats = field(default_factory=DCAStats)
 
     # Timestamps
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     activated_at: Optional[datetime] = None
 
     @classmethod
@@ -470,7 +470,7 @@ class DCAExecution:
     error_code: Optional[str] = None
 
     # Timing
-    scheduled_at: datetime = field(default_factory=datetime.utcnow)
+    scheduled_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 

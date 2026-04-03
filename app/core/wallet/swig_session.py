@@ -5,7 +5,7 @@ Swig session authority manager for Solana smart wallets.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
@@ -35,7 +35,7 @@ class SwigSessionAuthorityManager:
         self._provider = provider or get_swig_provider()
 
     async def create_authority(self, config: SwigSessionConfig) -> SwigSessionAuthority:
-        expires_at = datetime.utcnow() + timedelta(hours=config.expires_in_hours)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=config.expires_in_hours)
         permissions = {
             "maxValueUsd": str(config.max_value_usd),
             "allowedPrograms": config.allowed_programs,
