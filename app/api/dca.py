@@ -10,6 +10,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel, Field
 
+from arq.connections import ArqRedis, create_pool, RedisSettings
+
 from app.core.strategies.dca import (
     DCAService,
     DCAStrategy,
@@ -221,6 +223,22 @@ def verify_internal_key(x_internal_key: str = Header(None, alias="X-Internal-Key
     if not x_internal_key or x_internal_key != settings.convex_internal_api_key:
         raise HTTPException(status_code=401, detail="Invalid internal API key")
     return True
+
+
+_arq_pool: Optional[ArqRedis] = None
+
+
+async def get_arq_pool() -> ArqRedis:
+    """Lazy-initialise and return a shared arq Redis connection pool."""
+    global _arq_pool
+    if _arq_pool is None:
+        redis_url = settings.redis_url
+        if redis_url:
+            redis_settings = RedisSettings.from_dsn(redis_url)
+        else:
+            redis_settings = RedisSettings()
+        _arq_pool = await create_pool(redis_settings)
+    return _arq_pool
 
 
 # =============================================================================
@@ -492,19 +510,17 @@ async def get_performance(
 async def internal_execute(
     request: InternalExecuteRequest,
     _: bool = Depends(verify_internal_key),
-    service: DCAService = Depends(get_dca_service),
 ):
-    """Internal endpoint called by cron to execute a DCA strategy."""
+    """Internal endpoint called by cron to enqueue a DCA strategy execution."""
     try:
-        result = await service.execute_now(request.strategy_id)
+        pool = await get_arq_pool()
+        job = await pool.enqueue_job(
+            "execute_dca_strategy", request.strategy_id
+        )
         return {
-            "success": result.success,
-            "status": result.status.value,
-            "txHash": result.tx_hash,
-            "errorMessage": result.error_message,
-            "nextExecutionAt": result.next_execution_at.isoformat() if result.next_execution_at else None,
+            "enqueued": True,
+            "jobId": job.job_id,
+            "strategyId": request.strategy_id,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
